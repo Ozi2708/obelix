@@ -11,6 +11,9 @@ import { SEED_HISTORY, pastDayView } from '../lib/seed';
 
 /* Convert a CSS declaration string ("prop:val;prop:val") into a React style
    object, so the design-handoff inline styles can be ported verbatim. */
+// Préfixe basePath pour les assets statiques (GitHub Pages sert sous /obelix).
+const BASE = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 function css(str) {
   if (!str) return undefined;
   const obj = {};
@@ -1029,7 +1032,7 @@ function AppView({ V }) {
 
           {V.obStep0 && (
           <div style={css('flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 30px;text-align:center')}>
-            <img src="/logo-obelix.png" alt="Obélix" style={css('width:110px;height:auto;border-radius:26px;box-shadow:var(--shadow-md)')} />
+            <img src={BASE + '/logo-obelix.png'} alt="Obélix" style={css('width:110px;height:auto;border-radius:26px;box-shadow:var(--shadow-md)')} />
             <div style={css('font:var(--fw-extra) 27px/1.15 var(--font-display);color:var(--ink);margin-top:24px')}>Découvre ce que ton ventre essaie de te dire</div>
             <div style={css('font:var(--fw-regular) 13.5px/1.5 var(--font-body);color:var(--taupe-600);margin-top:12px')}>Logue tes repas en 20 secondes, note tes gênes — Obélix croise tout et identifie <strong style={{ color: 'var(--cocoa-800)' }}>tes</strong> suspects, pas ceux des autres.</div>
             <div style={css('margin-top:18px;display:flex;gap:9px;align-items:center;background:var(--cream-100);border-radius:var(--radius-pill);padding:8px 15px')}><i className="ph-fill ph-shield-check" style={{ fontSize: 15, color: 'var(--tol-good-500)' }}></i><div style={css('font:var(--fw-semibold) 11px var(--font-body);color:var(--cocoa-700)')}>Jamais un diagnostic — un outil d'observation</div></div>
@@ -1099,7 +1102,7 @@ function AppView({ V }) {
         {V.isJournal && (
         <div style={css('position:absolute;inset:0;display:flex;flex-direction:column;overflow-y:auto;padding-bottom:84px')} className="ob-scroll">
           <div style={css('position:relative;margin:12px 14px 0;border-radius:var(--radius-xl);padding:20px;background:linear-gradient(155deg,var(--coral-100),var(--cream-100));overflow:hidden;flex-shrink:0')}>
-            <img src="/logo-mark.png" alt="Obélix" style={css('position:absolute;top:16px;right:18px;height:34px;width:auto;opacity:.9')} />
+            <img src={BASE + '/logo-mark.png'} alt="Obélix" style={css('position:absolute;top:16px;right:18px;height:34px;width:auto;opacity:.9')} />
             <div onClick={V.goNotifs} style={css('position:absolute;top:16px;right:62px;width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--coral-700);box-shadow:var(--shadow-xs)')}><i className="ph ph-bell" style={{ fontSize: 17 }}></i>{V.hasUnread && (<span style={css('position:absolute;top:-3px;right:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--coral-500);color:#fff;font:800 9.5px var(--font-body);display:flex;align-items:center;justify-content:center;border:2px solid var(--cream-100)')}>{V.notifUnread}</span>)}</div>
             {V.navShowNow && (<div onClick={V.goProfil} style={css('position:absolute;top:16px;right:104px;width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--coral-700);box-shadow:var(--shadow-xs)')}><i className="ph ph-user" style={{ fontSize: 17 }}></i></div>)}
             <div style={css('font:var(--fw-semibold) 12px/1.2 var(--font-mono);color:var(--coral-700);max-width:calc(100% - 152px)')}>Jeudi 4 juillet · 9ᵉ jour de suivi</div>
