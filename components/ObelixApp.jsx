@@ -29,9 +29,15 @@ function css(str) {
   return obj;
 }
 
+// Types de repas classiques proposés à la validation.
+const MEAL_TYPES = ['Petit-déjeuner', 'Déjeuner', 'Goûter', 'Dîner', 'Encas'];
+
 const INITIAL = {
   screen: 'onboarding',
   obStep: 0,
+  mealType: 'Déjeuner',
+  mealTime: '12:40',
+  newIng: '',
   obSymptoms: [
     { name: 'Ballonnements', on: true }, { name: 'Crampes', on: true }, { name: 'Reflux', on: false },
     { name: 'Migraines', on: false }, { name: 'Fatigue', on: false }, { name: 'Nausées', on: false }, { name: 'Peau', on: false },
@@ -207,7 +213,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       return function () {
         const r = self.state.recents[i];
         const names = r.desc.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-        self.setState({ ings: self._ingsFrom(names), pendingMeal: { name: r.name, desc: r.desc, icon: r.icon, src: 'recent' }, screen: 'validate' });
+        self.setState(Object.assign({ ings: self._ingsFrom(names), pendingMeal: { name: r.name, desc: r.desc, icon: r.icon, src: 'recent' }, screen: 'validate' }, self._clockDefaults()));
       };
     };
     self.toggleRecentsTab = function () { return function () { self.setState(function (st) { return { captureTab: st.captureTab === 'recents' ? 'voice' : 'recents' }; }); }; };
@@ -264,7 +270,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
             ings.push({ name: (cid === 'gluten' ? 'Gluten' : 'Lactose') + ' (allergène déclaré)', tags: [{ l: cid }], checked: true });
           }
         });
-        self.setState({ ings: ings, pendingMeal: { name: p.name, desc: p.brand || p.name, icon: 'ph-barcode', src: 'barcode' }, screen: 'validate' });
+        self.setState(Object.assign({ ings: ings, pendingMeal: { name: p.name, desc: p.brand || p.name, icon: 'ph-barcode', src: 'barcode' }, screen: 'validate' }, self._clockDefaults()));
       };
     };
     self.openMeal = function (i) { return function () { self.setState({ mealDetail: i, screen: 'mealDetail' }); }; };
@@ -325,10 +331,15 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
           if (foods.indexOf(x.name) < 0) foods.push(x.name);
           x.tags.forEach(function (t) { if (st.windows[t.l] && comps.indexOf(t.l) < 0) comps.push(t.l); });
         });
-        const pm = st.pendingMeal || { name: 'Déjeuner', desc: 'Sandwich poulet, salade', icon: 'ph-hamburger' };
-        const meal = { name: pm.name, desc: pm.desc, time: 12.67, timeLabel: '12:40', icon: pm.icon, compounds: comps, foods: foods };
+        const pm = st.pendingMeal || { desc: '', icon: 'ph-bowl-food' };
+        const type = st.mealType || 'Repas';
+        const timeLabel = st.mealTime || '12:40';
+        const tp = timeLabel.split(':');
+        const timeDec = (parseInt(tp[0], 10) || 12) + (parseInt(tp[1], 10) || 0) / 60;
+        const desc = foods.length ? foods.join(', ') : (pm.desc || type);
+        const meal = { name: type, desc: desc, time: timeDec, timeLabel: timeLabel, icon: self._iconForType(type), compounds: comps, foods: foods };
         self.setState({ meals: st.meals.concat([meal]), mealLogged: true, screen: 'prevision' });
-        if (comps.length) { const risk = comps[0], W = st.windows[risk] || 6; setTimeout(function () { self.firePush({ icon: 'ph-timer', color: 'watch', title: 'Fenêtre à risque · ' + risk, text: pm.name + ' — je surveille jusque ~+' + W + 'h. Une gêne maintenant lui serait attribuée.', action: 'now' }); }, 1500); }
+        if (comps.length) { const risk = comps[0], W = st.windows[risk] || 6; setTimeout(function () { self.firePush({ icon: 'ph-timer', color: 'watch', title: 'Fenêtre à risque · ' + risk, text: type + ' — je surveille jusque ~+' + W + 'h. Une gêne maintenant lui serait attribuée.', action: 'now' }); }, 1500); }
       };
     };
     self.saveGene = function () {
@@ -361,12 +372,11 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
     self.onPhotoConfirm = function (res) {
       const names = (res && res.foods) || [];
       const ings = names.length ? self._ingsFrom(names) : [];
-      self.setState({
+      self.setState(Object.assign({
         ings: ings,
-        addedCount: 0,
         pendingMeal: { name: 'Repas', desc: (res && res.title) || 'Repas photographié', icon: 'ph-image-square', src: 'photo' },
         screen: 'validate',
-      });
+      }, self._clockDefaults()));
     };
     self.goValidateVoice = function () {
       return function () {
@@ -382,15 +392,43 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
           ings = self._voiceIngs();
           desc = 'Sandwich poulet, salade';
         }
-        self.setState({ ings: ings, pendingMeal: { name: 'Déjeuner', desc: desc, icon: 'ph-hamburger', src: 'voice' }, screen: 'validate' });
+        self.setState(Object.assign({ ings: ings, pendingMeal: { name: 'Déjeuner', desc: desc, icon: 'ph-hamburger', src: 'voice' }, screen: 'validate' }, self._clockDefaults()));
       };
     };
-    self.addIng = function () {
-      return function () {
-        const st = self.state, ex = self._extras(), i = st.addedCount || 0;
-        if (i < ex.length) { const e = ex[i]; self.setState({ ings: st.ings.concat([{ name: e, tags: self._tagsOf(e), checked: true }]), addedCount: i + 1 }); }
-        else self._toast('Tu as déjà ajouté les extras courants');
-      };
+    // Type de repas + heure déduits de l'horloge réelle à l'ouverture de la validation.
+    self._clockDefaults = function () {
+      const d = new Date();
+      const h = d.getHours(), m = d.getMinutes();
+      const hm = (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
+      const dec = h + m / 60;
+      let type = 'Encas';
+      if (dec < 10.5) type = 'Petit-déjeuner';
+      else if (dec < 14.5) type = 'Déjeuner';
+      else if (dec < 17.5) type = 'Goûter';
+      else if (dec < 21.5) type = 'Dîner';
+      return { mealType: type, mealTime: hm, newIng: '', addedCount: 0 };
+    };
+    self._iconForType = function (t) {
+      return {
+        'Petit-déjeuner': 'ph-coffee', 'Déjeuner': 'ph-bowl-food', 'Goûter': 'ph-cookie',
+        'Dîner': 'ph-cooking-pot', 'Encas': 'ph-hamburger',
+      }[t] || 'ph-bowl-food';
+    };
+    self.setMealType = function (t) { self.setState({ mealType: t }); };
+    self.onMealTime = function (v) { if (v) self.setState({ mealTime: v }); };
+    self.onNewIng = function (v) { self.setState({ newIng: v }); };
+    // Ajout manuel d'un ingrédient saisi par l'utilisateur (tags auto depuis la base).
+    self.addIngFromInput = function () {
+      const st = self.state;
+      const name = (st.newIng || '').trim();
+      if (!name) return;
+      if (st.ings.some(function (x) { return x.name.toLowerCase() === name.toLowerCase(); })) {
+        self._toast('« ' + name + ' » est déjà dans la liste');
+        self.setState({ newIng: '' });
+        return;
+      }
+      const pretty = name.charAt(0).toUpperCase() + name.slice(1);
+      self.setState({ ings: st.ings.concat([{ name: pretty, tags: self._tagsOf(pretty), checked: true }]), newIng: '' });
     };
     // Journées réelles (historique + aujourd'hui) pour l'export et le rapport.
     self._allDays = function (st) {
@@ -887,7 +925,10 @@ function renderValsFactory(self) {
       onBarcodeDetected: (code) => self.scanDetected(code),
       onVoiceResult: (res) => self.setVoiceResult(res),
       isPhoto: s.screen === 'photo',
-      addIng: self.addIng(), validateMealName: s.pendingMeal ? s.pendingMeal.name : 'Déjeuner',
+      validateMealName: s.pendingMeal ? s.pendingMeal.name : 'Déjeuner',
+      mealTypes: MEAL_TYPES, mealType: s.mealType, mealTime: s.mealTime, newIng: s.newIng,
+      setMealType: (t) => self.setMealType(t), onMealTime: (v) => self.onMealTime(v),
+      onNewIng: (v) => self.onNewIng(v), addIngFromInput: () => self.addIngFromInput(),
       validateSrcIcon: s.pendingMeal && s.pendingMeal.src === 'photo' ? 'ph ph-image-square' : s.pendingMeal && s.pendingMeal.src === 'recent' ? 'ph ph-clock-counter-clockwise' : s.pendingMeal && s.pendingMeal.src === 'barcode' ? 'ph ph-barcode' : 'ph ph-microphone',
       validateSrcLabel: s.pendingMeal && s.pendingMeal.src === 'photo' ? 'Depuis une photo · ' + s.pendingMeal.desc : s.pendingMeal && s.pendingMeal.src === 'recent' ? 'Repas fréquent · ' + s.pendingMeal.desc : s.pendingMeal && s.pendingMeal.src === 'barcode' ? 'Produit scanné · ' + s.pendingMeal.desc : 'Depuis la voix · ' + ((s.pendingMeal && s.pendingMeal.desc) || 'ton repas'),
       isBarcode: s.screen === 'barcode', goBarcode: self.goBarcode(),
@@ -1342,7 +1383,16 @@ function AppView({ V }) {
                 </div>
               ))}
             </div>
-            <div onClick={V.addIng} style={css('display:flex;align-items:center;gap:10px;border:1.5px dashed var(--border-strong);border-radius:var(--radius-sm);padding:12px 14px;color:var(--taupe-600);margin-top:8px;cursor:pointer')}><i className="ph ph-plus" style={{ fontSize: 16 }}></i><div style={css('font:var(--fw-semibold) 12.5px var(--font-body)')}>Ajouter un ingrédient oublié</div></div>
+            <div style={css('display:flex;gap:8px;margin-top:8px')}>
+              <input
+                value={V.newIng}
+                onChange={(e) => V.onNewIng(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); V.addIngFromInput(); } }}
+                placeholder="Ajouter un ingrédient oublié…"
+                style={css('flex:1;min-width:0;border:1.5px dashed var(--border-strong);border-radius:var(--radius-sm);padding:12px 14px;font:var(--fw-regular) 12.5px var(--font-body);color:var(--cocoa-800);background:#fff;outline:none')}
+              />
+              <div onClick={V.addIngFromInput} style={css('display:flex;align-items:center;gap:5px;background:var(--coral-500);color:#fff;border-radius:var(--radius-sm);padding:0 15px;font:var(--fw-bold) 12.5px var(--font-body);cursor:pointer;white-space:nowrap')}><i className="ph ph-plus" style={{ fontSize: 15 }}></i>Ajouter</div>
+            </div>
             {V.elimWarning && (
               <div style={css('margin-top:10px;display:flex;gap:9px;align-items:flex-start;background:var(--tol-watch-50);border-radius:var(--radius-sm);padding:11px 13px')}><i className="ph-fill ph-warning" style={{ fontSize: 15, color: 'var(--tol-watch-500)', flexShrink: 0, marginTop: 1 }}></i><div style={css('font:var(--fw-regular) 11px/1.45 var(--font-body);color:var(--tol-watch-700)')}><strong>{V.elimWarnIng}</strong> contient du gluten — tu es en plein test d'éviction (J2/7). Décoche-le ou le test sera faussé.</div></div>
             )}
@@ -1352,10 +1402,25 @@ function AppView({ V }) {
               <div onClick={V.setPortionN} style={css(V.portionNormaleStyle)}>Normale</div>
               <div onClick={V.setPortionG} style={css(V.portionGrandeStyle)}>Grande</div>
             </div>
-            <div style={css('display:flex;gap:8px;margin-top:14px')}>
-              <div style={css('background:var(--coral-500);color:#fff;border-radius:var(--radius-pill);padding:6px 13px;font:var(--fw-bold) 11.5px var(--font-body)')}>{V.validateMealName}</div>
-              <div style={css('background:#fff;border:1px solid var(--border-strong);border-radius:var(--radius-pill);padding:6px 13px;font:var(--fw-regular) 11.5px var(--font-mono);color:var(--taupe-600)')}>12:40</div>
+            <div style={css('font:var(--fw-bold) 12px var(--font-body);color:var(--cocoa-700);margin:16px 2px 8px')}>Type de repas</div>
+            <div style={css('display:flex;flex-wrap:wrap;gap:7px')}>
+              {V.mealTypes.map((t, i) => (
+                <div
+                  key={i}
+                  onClick={() => V.setMealType(t)}
+                  style={css((t === V.mealType ? 'background:var(--coral-500);color:#fff;border:1px solid var(--coral-500);' : 'background:#fff;color:var(--cocoa-700);border:1px solid var(--border-strong);') + 'border-radius:var(--radius-pill);padding:7px 14px;font:var(--fw-bold) 11.5px var(--font-body);cursor:pointer')}
+                >
+                  {t}
+                </div>
+              ))}
             </div>
+            <div style={css('font:var(--fw-bold) 12px var(--font-body);color:var(--cocoa-700);margin:16px 2px 8px')}>Heure du repas</div>
+            <input
+              type="time"
+              value={V.mealTime}
+              onChange={(e) => V.onMealTime(e.target.value)}
+              style={css('border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:10px 13px;font:var(--fw-regular) 13px var(--font-mono);color:var(--cocoa-800);background:#fff;outline:none')}
+            />
           </div>
           <div style={css('padding:10px 18px 20px;flex-shrink:0')}>
             <div onClick={V.logMeal} style={css('background:var(--coral-500);color:#fff;text-align:center;border-radius:var(--radius-md);padding:15px 0;font:var(--fw-bold) 14px var(--font-display);cursor:pointer;box-shadow:var(--shadow-brand)')}>{V.checkedLabel}</div>
