@@ -1,0 +1,15 @@
+/* ============================================================
+   OBÉLIX · RADII TOKENS
+   Very rounded corners are core to the brand — soft, friendly,
+   pill-like. Nothing is sharp.
+   ============================================================ */
+:root {
+  --radius-xs:   8px;
+  --radius-sm:   12px;
+  --radius-md:   16px;   /* default control radius */
+  --radius-lg:   22px;   /* cards */
+  --radius-xl:   28px;   /* large panels, sheets */
+  --radius-2xl:  36px;   /* hero cards, modals */
+  --radius-pill: 999px;  /* buttons, chips, badges */
+  --radius-full: 50%;    /* avatars, dots */
+}

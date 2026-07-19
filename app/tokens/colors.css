@@ -1,0 +1,88 @@
+/* ============================================================
+   OBÉLIX · COLOR TOKENS
+   Warm, appetising palette. Coral is the BRAND colour and is
+   kept deliberately separate from the tolerance scale
+   (green → amber → red), which is ALWAYS paired with a label +
+   pictogram so it is never read by hue alone.
+   ============================================================ */
+:root {
+  /* --- Brand · Terracotta / Tangerine (from the Obélix menhir logo) --- */
+  --coral-50:  #FDF1E7;
+  --coral-100: #FADCC2;
+  --coral-200: #F2BE8E;
+  --coral-300: #EA9E58;
+  --coral-400: #E28234;
+  --coral-500: #D86816;  /* brand primary — matches logo */
+  --coral-600: #BE550F;
+  --coral-700: #9C440D;
+  --coral-800: #7C360D;
+  --coral-900: #5E2B0E;
+
+  /* A brighter tangerine accent, used sparingly for highlights/gradients */
+  --tangerine-400: #F59A3E;
+  --tangerine-500: #EE8420;
+
+  /* --- Warm neutrals · Cream → Cocoa -------------------------- */
+  --cream-50:  #FFFCF8;  /* app background, lightest */
+  --cream-100: #FFF7EF;
+  --cream-200: #FBEFE3;
+  --cream-300: #F3E4D3;
+  --sand-400:  #E7D3BE;
+  --sand-500:  #D2B89C;
+  --taupe-600: #A98E73;
+  --cocoa-700: #7C6553;
+  --cocoa-800: #524235;
+  --cocoa-900: #33281F;  /* darkest text / dark surfaces */
+  --ink:       #2B211A;  /* near-black warm ink */
+
+  /* --- Tolerance scale · label+picto ALWAYS accompany ---------- */
+  --tol-good-50:   #E7F6EC;
+  --tol-good-100:  #C4EAD1;
+  --tol-good-500:  #3FA96B;  /* « te réussit bien » */
+  --tol-good-700:  #2C7A4C;
+
+  --tol-watch-50:  #FCF2DC;
+  --tol-watch-100: #F7E1AE;
+  --tol-watch-500: #E3A21F;  /* « à surveiller » */
+  --tol-watch-700: #A97610;
+
+  --tol-avoid-50:  #FBE7E6;
+  --tol-avoid-100: #F4C4C1;
+  --tol-avoid-500: #D6453F;  /* « semble te gêner » */
+  --tol-avoid-700: #9E2B26;
+
+  /* --- Support / info (cool, distinct from brand) ------------- */
+  --info-50:  #E8F2FA;
+  --info-500: #3B84C4;
+  --info-700: #2A6296;
+
+  /* ============================================================
+     SEMANTIC ALIASES — reference these in product UI
+     ============================================================ */
+  /* Surfaces */
+  --surface-app:        var(--cream-50);
+  --surface-card:       #FFFFFF;
+  --surface-sunken:     var(--cream-200);
+  --surface-raised:     var(--cream-100);
+  --surface-inverse:    var(--cocoa-900);
+  --surface-brand:      var(--coral-500);
+  --surface-brand-soft: var(--coral-50);
+
+  /* Text */
+  --text-strong:   var(--ink);
+  --text-body:     var(--cocoa-800);
+  --text-muted:    var(--taupe-600);
+  --text-on-brand: #FFFFFF;
+  --text-brand:    var(--coral-600);
+  --text-inverse:  var(--cream-100);
+
+  /* Borders / hairlines */
+  --border-soft:   var(--cream-300);
+  --border-strong: var(--sand-400);
+  --border-brand:  var(--coral-300);
+  --ring-focus:    var(--coral-400);
+
+  /* Interactive brand states */
+  --brand-hover:  var(--coral-600);
+  --brand-active: var(--coral-700);
+}

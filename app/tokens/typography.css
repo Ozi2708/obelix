@@ -1,0 +1,57 @@
+/* ============================================================
+   OBÉLIX · TYPOGRAPHY TOKENS
+   Bricolage Grotesque → display & headings (warm, rounded grotesk)
+   Nunito Sans          → body & UI (friendly, soft, high legibility)
+   DM Mono              → data, numbers, units, log timestamps
+   ============================================================ */
+:root {
+  /* Families */
+  --font-display: 'Bricolage Grotesque', 'Trebuchet MS', system-ui, sans-serif;
+  --font-body:    'Nunito Sans', system-ui, -apple-system, sans-serif;
+  --font-mono:    'DM Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  /* Weights */
+  --fw-regular:  400; /* @kind font */
+  --fw-semibold: 600; /* @kind font */
+  --fw-bold:     700; /* @kind font */
+  --fw-extra:    800; /* @kind font */
+  --fw-black:    900; /* @kind font */
+
+  /* Type scale — fluid-friendly px steps */
+  --text-2xs: 11px;
+  --text-xs:  12px;
+  --text-sm:  14px;
+  --text-md:  16px;   /* base body */
+  --text-lg:  18px;
+  --text-xl:  22px;
+  --text-2xl: 28px;
+  --text-3xl: 36px;
+  --text-4xl: 46px;
+  --text-5xl: 60px;
+  --text-6xl: 76px;
+
+  /* Line heights */
+  --lh-tight:   1.05; /* @kind other */
+  --lh-snug:    1.2; /* @kind other */
+  --lh-normal:  1.45; /* @kind other */
+  --lh-relaxed: 1.65; /* @kind other */
+
+  /* Letter spacing */
+  --ls-tight:  -0.02em;
+  --ls-snug:   -0.01em;
+  --ls-normal: 0; /* @kind other */
+  --ls-wide:   0.04em;
+  --ls-caps:   0.08em;  /* for the rare uppercase eyebrow */
+
+  /* Semantic roles */
+  --title-hero:    var(--fw-extra) var(--text-5xl)/var(--lh-tight) var(--font-display);
+  --title-display: var(--fw-bold) var(--text-3xl)/var(--lh-snug) var(--font-display);
+  --title-section: var(--fw-bold) var(--text-2xl)/var(--lh-snug) var(--font-display);
+  --title-card:    var(--fw-bold) var(--text-lg)/var(--lh-snug) var(--font-display);
+  --body-lg:       var(--fw-regular) var(--text-lg)/var(--lh-relaxed) var(--font-body);
+  --body-md:       var(--fw-regular) var(--text-md)/var(--lh-normal) var(--font-body);
+  --body-sm:       var(--fw-regular) var(--text-sm)/var(--lh-normal) var(--font-body);
+  --label:         var(--fw-bold) var(--text-sm)/1.2 var(--font-body);
+  --data-md:       var(--fw-regular) var(--text-md)/1.3 var(--font-mono);
+  --data-lg:       var(--fw-medium, 500) var(--text-2xl)/1.1 var(--font-mono);
+}

@@ -1,0 +1,49 @@
+/* Obélix design-system tokens (order matters: fonts → colors → …) */
+@import url('./tokens/fonts.css');
+@import url('./tokens/colors.css');
+@import url('./tokens/typography.css');
+@import url('./tokens/spacing.css');
+@import url('./tokens/radii.css');
+@import url('./tokens/shadows.css');
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--cream-200);
+  font-family: var(--font-body);
+  color: var(--cocoa-800);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+a {
+  color: var(--coral-600);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--coral-700);
+}
+
+/* Hide scrollbars inside the phone while keeping scroll behaviour */
+.ob-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.ob-scroll {
+  scrollbar-width: none;
+}
+
+@keyframes obspin {
+  to {
+    transform: rotate(360deg);
+  }
+}

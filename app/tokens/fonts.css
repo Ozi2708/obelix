@@ -1,0 +1,4 @@
+/* Obélix webfonts — Google Fonts.
+   Bricolage Grotesque (display/titles), Nunito Sans (body/UI), DM Mono (data/numbers).
+   Imported here so the @font-face closure ships with the design system. */
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Nunito+Sans:ital,wght@0,400;0,600;0,700;0,800;0,900;1,400&family=DM+Mono:wght@400;500&display=swap');
