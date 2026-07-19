@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import ImageSlot from './ImageSlot';
 import PhoneFrame from './PhoneFrame';
 import CameraScanner from './CameraScanner';
 import VoiceCapture from './VoiceCapture';
+import PhotoCapture from './PhotoCapture';
 import OBELIX_FOODS from '../lib/foodDb';
+import { analyze, predict, cap as capComp } from '../lib/analysis';
+import { SEED_HISTORY, pastDayView } from '../lib/seed';
 
 /* Convert a CSS declaration string ("prop:val;prop:val") into a React style
    object, so the design-handoff inline styles can be ported verbatim. */
@@ -59,18 +61,7 @@ const INITIAL = {
   ],
   mealLogged: false,
   dayOffset: 0,
-  pastDays: {
-    '-1': { meals: [
-      { name: 'Petit-déjeuner', desc: 'Tartines beurre, café', timeLabel: '07:50', icon: 'ph-coffee', compounds: ['gluten', 'fructanes'] },
-      { name: 'Déjeuner', desc: 'Pâtes carbonara', timeLabel: '13:05', icon: 'ph-bowl-food', compounds: ['gluten', 'lactose'] },
-      { name: 'Dîner', desc: 'Soupe, pain complet', timeLabel: '20:10', icon: 'ph-cooking-pot', compounds: ['gluten', 'fructanes'] },
-    ], gene: { time: '16:45', text: 'ballonnement fort · relié au gluten (Déjeuner 13:05)' }, ok: false },
-    '-2': { meals: [
-      { name: 'Petit-déjeuner', desc: 'Smoothie banane, avoine', timeLabel: '08:30', icon: 'ph-coffee', compounds: ['fructanes'] },
-      { name: 'Déjeuner', desc: 'Salade riz thon', timeLabel: '12:30', icon: 'ph-bowl-food', compounds: [] },
-      { name: 'Dîner', desc: 'Omelette, salade', timeLabel: '19:45', icon: 'ph-cooking-pot', compounds: [] },
-    ], gene: null, ok: true },
-  },
+  history: SEED_HISTORY,
   recents: [
     { name: 'Petit-déj habituel', desc: 'Yaourt, granola, miel', icon: 'ph-coffee', count: 6 },
     { name: 'Sandwich poulet', desc: 'Pain, poulet, mayonnaise, salade', icon: 'ph-hamburger', count: 5 },
@@ -82,10 +73,8 @@ const INITIAL = {
   ],
   recentToast: null,
   voice: null,
-  stats: { repas: 24, genes: 6, glutenAvec: 82, reglesGenes: 9, okDays: 4, waterLowGenes: 4, waterLowDays: 5, waterDaysLogged: 8 },
   dayCheck: 'open',
   notifPermission: 'unsupported',
-  demoDay1: false,
   alertsOn: true, cycleTrackOn: true, exportDone: false,
   lastGene: null,
   ings: [
@@ -123,6 +112,22 @@ const INITIAL = {
   ],
 };
 
+// Profil vierge après suppression des données (aucun historique, aucun repas).
+const FRESH_STATE = Object.assign({}, INITIAL, {
+  history: [],
+  meals: [],
+  mealLogged: false,
+  lastGene: null,
+  dayCheck: 'open',
+  waterLevel: null,
+  elimination: false,
+  feedbackAnswered: false,
+  voice: null,
+  recents: [],
+  notifs: [],
+  windows: { gluten: 5, lactose: 2, fructanes: 6, galactanes: 8, polyols: 6, histamine: 3, fructose: 4, caffeine: 2 },
+});
+
 export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
   const [state, setStateRaw] = useState(INITIAL);
   const stateRef = useRef(state);
@@ -151,7 +156,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       Object.keys(found).forEach((c) => { const k = found[c].name; (byMeal[k] = byMeal[k] || { m: found[c], cs: [] }).cs.push(c); });
       const parts = Object.keys(byMeal).map((k) => byMeal[k].cs.join(' & ') + ' (' + k + ' ' + byMeal[k].m.timeLabel + ')');
       return {
-        hasGluten: !!found.gluten, timeLabel: self._h(evH),
+        hasGluten: !!found.gluten, timeLabel: self._h(evH), evH, compounds: Object.keys(found),
         text: parts.length ? 'reliée à ' + parts.join(' ; ') : 'aucun repas dans la fenêtre — notée comme gêne isolée (contexte cycle pris en compte)',
       };
     };
@@ -170,14 +175,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       return function () {
         self.setState(function (st) {
           const was = st.waterLevel;
-          const next = was === level ? null : level;
-          const stats = Object.assign({}, st.stats);
-          if (was == null && next != null) stats.waterDaysLogged += 1;
-          if (was == null && next === 'low') stats.waterLowDays += 1;
-          if (was === 'low' && next !== 'low') stats.waterLowDays = Math.max(0, stats.waterLowDays - 1);
-          if (was !== 'low' && was != null && next === 'low') stats.waterLowDays += 1;
-          if (was != null && next == null) stats.waterDaysLogged = Math.max(0, stats.waterDaysLogged - 1);
-          return { waterLevel: next, stats };
+          return { waterLevel: was === level ? null : level };
         });
       };
     };
@@ -293,7 +291,6 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
             meals: st.meals.filter(function (_, j) { return j !== st.mealDetail; }),
             mealLogged: wasLogged ? false : st.mealLogged,
             screen: 'journal', mealDetail: null,
-            stats: Object.assign({}, st.stats, { repas: Math.max(0, st.stats.repas - 1) }),
           };
         });
       };
@@ -337,10 +334,15 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         const st = self.state;
         if (st.mealLogged) { self.setState({ screen: 'prevision' }); return; }
         const comps = [];
-        st.ings.forEach(function (x) { if (x.checked) x.tags.forEach(function (t) { if (st.windows[t.l] && comps.indexOf(t.l) < 0) comps.push(t.l); }); });
+        const foods = [];
+        st.ings.forEach(function (x) {
+          if (!x.checked) return;
+          if (foods.indexOf(x.name) < 0) foods.push(x.name);
+          x.tags.forEach(function (t) { if (st.windows[t.l] && comps.indexOf(t.l) < 0) comps.push(t.l); });
+        });
         const pm = st.pendingMeal || { name: 'Déjeuner', desc: 'Sandwich poulet, salade', icon: 'ph-hamburger' };
-        const meal = { name: pm.name, desc: pm.desc, time: 12.67, timeLabel: '12:40', icon: pm.icon, compounds: comps };
-        self.setState({ meals: st.meals.concat([meal]), mealLogged: true, screen: 'prevision', stats: Object.assign({}, st.stats, { repas: st.stats.repas + 1 }) });
+        const meal = { name: pm.name, desc: pm.desc, time: 12.67, timeLabel: '12:40', icon: pm.icon, compounds: comps, foods: foods };
+        self.setState({ meals: st.meals.concat([meal]), mealLogged: true, screen: 'prevision' });
         if (comps.length) { const risk = comps[0], W = st.windows[risk] || 6; setTimeout(function () { self.firePush({ icon: 'ph-timer', color: 'watch', title: 'Fenêtre à risque · ' + risk, text: pm.name + ' — je surveille jusque ~+' + W + 'h. Une gêne maintenant lui serait attribuée.', action: 'now' }); }, 1500); }
       };
     };
@@ -348,44 +350,39 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       return function () {
         self.setState(function (st) {
           const a = self._attrib(st);
+          const intensity = st.intensity || 'moyen';
           return {
-            lastGene: { time: a.timeLabel, text: a.text },
+            lastGene: { time: a.timeLabel, text: a.text, timeNum: a.evH, compounds: a.compounds, intensity: intensity, sinceElim: st.elimination === true },
             dayCheck: 'hidden',
             screen: 'journal',
-            stats: Object.assign({}, st.stats, {
-              genes: st.stats.genes + 1,
-              glutenAvec: Math.min(96, st.stats.glutenAvec + (a.hasGluten ? 1 : 0)),
-              reglesGenes: st.stats.reglesGenes + (st.cyclePhase === 'regles' ? 1 : 0),
-              waterLowGenes: st.stats.waterLowGenes + (st.waterLevel === 'low' ? 1 : 0),
-            }),
           };
         });
       };
     };
     self.clearGene = function () { return function () { self.setState({ lastGene: null }); }; };
-    self.toggleDemoDay1 = function () { return function () { self.setState(function (st) { return { demoDay1: !st.demoDay1 }; }); }; };
     self.toggleFlag = function (k) { return function () { self.setState(function (st) { const o = {}; o[k] = !st[k]; return o; }); }; };
-    self.doExport = function () { return function () { self.setState({ exportDone: true }); setTimeout(function () { self.setState({ exportDone: false }); }, 2600); }; };
     self.confirmDayOk = function () {
-      return function () {
-        self.setState(function (st) {
-          return { dayCheck: 'ok', stats: Object.assign({}, st.stats, { okDays: st.stats.okDays + 1 }) };
-        });
-      };
+      return function () { self.setState({ dayCheck: 'ok' }); };
     };
 
     self._db = function () { return OBELIX_FOODS || null; };
     self._tagsOf = function (name) { const db = self._db(); return db ? db.tags(name).map(function (c) { return { l: c.id }; }) : []; };
     self._ingsFrom = function (names) { return names.map(function (n) { return { name: n, tags: self._tagsOf(n), checked: true }; }); };
     self._voiceIngs = function () { return self._ingsFrom(['Pain', 'Poulet', 'Mayonnaise', 'Salade verte']); };
-    self._recipe = function () { return [
-      { name: 'Lentilles corail', conf: 'sûr' }, { name: 'Oignon jaune', conf: 'sûr' }, { name: 'Ail', conf: 'sûr' },
-      { name: 'Tomates concassées', conf: 'moyen' }, { name: 'Lait de coco', conf: 'sûr' }, { name: 'Riz basmati', conf: 'sûr' },
-      { name: 'Épinards', conf: 'moyen' }, { name: 'Gingembre', conf: 'sûr' }, { name: 'Cumin', conf: 'moyen' }, { name: 'Coriandre fraîche', conf: 'faible' },
-    ]; };
     self._extras = function () { return ['Huile d\'olive', 'Beurre', 'Sauce soja', 'Sucre']; };
     self._toast = function (msg) { self.setState({ toast: msg }); clearTimeout(self._tt); self._tt = setTimeout(function () { self.setState({ toast: null }); }, 2600); };
     self.goPhoto = function () { return function () { self.setState({ screen: 'photo', photoStage: 'pick' }); }; };
+    // Résultat OCR photo → écran de validation (aliments réels lus sur l'image).
+    self.onPhotoConfirm = function (res) {
+      const names = (res && res.foods) || [];
+      const ings = names.length ? self._ingsFrom(names) : [];
+      self.setState({
+        ings: ings,
+        addedCount: 0,
+        pendingMeal: { name: 'Repas', desc: (res && res.title) || 'Repas photographié', icon: 'ph-image-square', src: 'photo' },
+        screen: 'validate',
+      });
+    };
     self.goValidateVoice = function () {
       return function () {
         const v = self.state.voice;
@@ -403,13 +400,6 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         self.setState({ ings: ings, pendingMeal: { name: 'Déjeuner', desc: desc, icon: 'ph-hamburger', src: 'voice' }, screen: 'validate' });
       };
     };
-    self.analyzePhoto = function () { return function () { self.setState({ photoStage: 'scan' }); clearTimeout(self._pt); self._pt = setTimeout(function () { self.setState({ photoStage: 'done' }); }, 1200); }; };
-    self.confirmPhoto = function () {
-      return function () {
-        const ings = self._ingsFrom(self._recipe().map(function (d) { return d.name; }));
-        self.setState({ ings: ings, pendingMeal: { name: 'Dîner', desc: 'Dahl de lentilles corail', icon: 'ph-bowl-food', src: 'photo' }, screen: 'validate' });
-      };
-    };
     self.addIng = function () {
       return function () {
         const st = self.state, ex = self._extras(), i = st.addedCount || 0;
@@ -417,9 +407,94 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         else self._toast('Tu as déjà ajouté les extras courants');
       };
     };
-    self.exportAll = function () { return function () { self._toast('Archive générée · obelix-manon-donnees.zip'); }; };
+    // Journées réelles (historique + aujourd'hui) pour l'export et le rapport.
+    self._allDays = function (st) {
+      const s = st || self.state;
+      const today = {
+        dayLabel: "aujourd'hui", dateLabel: 'jeudi 4 juillet', phase: s.cyclePhase, waterLevel: s.waterLevel || null,
+        meals: (s.meals || []).map(function (m) { return { name: m.name, desc: m.desc, timeLabel: m.timeLabel, compounds: m.compounds || [], foods: m.foods || [] }; }),
+        genes: s.lastGene ? [{ timeLabel: s.lastGene.time, intensity: s.lastGene.intensity, compounds: s.lastGene.compounds || [] }] : [],
+        ok: s.dayCheck === 'ok',
+      };
+      return (s.history || []).concat([today]);
+    };
+    self._downloadBlob = function (content, filename, type) {
+      try {
+        const blob = new Blob([content], { type: type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click();
+        setTimeout(function () { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+        return true;
+      } catch (e) { return false; }
+    };
+    // Export JSON réel de toutes les données.
+    self.exportAll = function () {
+      return function () {
+        const s = self.state;
+        const payload = {
+          app: 'Obélix', exportedAt: new Date().toISOString(), user: 'Manon',
+          windows: s.windows, cycle: { length: s.cycleLength, currentDay: s.currentDay, phase: s.cyclePhase, periodDuration: s.periodDuration },
+          days: self._allDays(s),
+        };
+        const ok = self._downloadBlob(JSON.stringify(payload, null, 2), 'obelix-manon-donnees.json', 'application/json');
+        self._toast(ok ? 'Export téléchargé · obelix-manon-donnees.json' : "Export impossible sur ce navigateur");
+      };
+    };
+    // Rapport PDF réel (jsPDF, importé dynamiquement) calculé sur tes données.
+    self.doExport = function () {
+      return function () {
+        self.setState({ exportDone: true });
+        import('jspdf').then(function (mod) {
+          const jsPDF = mod.jsPDF || mod.default;
+          const s = self.state;
+          const days = self._allDays(s);
+          const A = analyze(days, s.windows);
+          const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+          const M = 48; let y = 56;
+          const line = function (txt, size, color, gap) {
+            doc.setFontSize(size || 11);
+            doc.setTextColor.apply(doc, color || [43, 33, 26]);
+            const lines = doc.splitTextToSize(txt, 515);
+            doc.text(lines, M, y); y += lines.length * (size ? size + 3 : 14) + (gap || 0);
+          };
+          doc.setFillColor(216, 104, 22); doc.rect(0, 0, 595, 8, 'F');
+          line('Obélix — rapport de suivi', 20, [216, 104, 22], 4);
+          line('Manon · ' + days.length + ' jours · généré le ' + new Date().toLocaleDateString('fr-FR'), 10, [122, 101, 83], 12);
+          line('Synthèse', 14, [43, 33, 26], 4);
+          line('Repas enregistrés : ' + A.totalMeals + '   ·   Gênes : ' + A.totalGenes + '   ·   Jours « sans gêne » confirmés : ' + A.okDays, 11, [82, 66, 53], 2);
+          line('Confiance de l\'analyse : ' + A.confidence, 11, [82, 66, 53], 12);
+          line('Suspect principal', 14, [43, 33, 26], 4);
+          if (A.topSuspect) {
+            const c = A.comp[A.topSuspect];
+            line(capComp(A.topSuspect) + ' — gêne ' + c.avec + '% des jours avec vs ' + c.sans + '% sans (écart ' + c.delta + ' pts).', 11, [158, 43, 38], 12);
+          } else { line('Pas encore de suspect net — continuer à loguer.', 11, [82, 66, 53], 12); }
+          line('Corrélations par composé', 14, [43, 33, 26], 4);
+          ['gluten', 'lactose', 'fructanes', 'fructose', 'polyols', 'galactanes', 'histamine', 'caffeine'].forEach(function (id) {
+            const c = A.comp[id];
+            if (c.ate > 0) line('• ' + capComp(id) + ' : avec ' + c.avec + '% / sans ' + c.sans + '%  (' + c.ate + ' jours, fenêtre ~' + (s.windows[id] || 6) + 'h)', 10, [82, 66, 53], 0);
+          });
+          y += 8;
+          line('Cycle : ' + A.reglesGenes + ' gênes pendant les règles.   Hydratation : ' + A.waterLowGenes + ' gênes les jours peu hydratés.', 10, [82, 66, 53], 14);
+          line('Obélix observe, ne diagnostique pas. À partager avec un professionnel de santé.', 9, [122, 101, 83], 0);
+          doc.save('obelix-manon-rapport.pdf');
+          setTimeout(function () { self.setState({ exportDone: false }); }, 2600);
+        }).catch(function () {
+          self._toast('Génération du PDF impossible sur ce navigateur');
+          self.setState({ exportDone: false });
+        });
+      };
+    };
     self.toggleWipe = function () { return function () { self.setState(function (st) { return { confirmWipe: !st.confirmWipe }; }); }; };
-    self.doWipe = function () { return function () { self.setState({ confirmWipe: false }); self._toast('Démo — tes données sont conservées'); }; };
+    // Suppression réelle : efface le stockage local et repart d'un profil vierge.
+    self.doWipe = function () {
+      return function () {
+        try { localStorage.removeItem('obelix_manon_state_v1'); } catch (e) {}
+        self.setState(Object.assign({}, FRESH_STATE, { confirmWipe: false, screen: 'journal', notifPermission: self.state.notifPermission }));
+        self._toast('Toutes tes données ont été supprimées');
+      };
+    };
     self.goNotifs = function () { return function () { self.setState(function (st) { return { screen: 'notifs', notifs: st.notifs.map(function (n) { return Object.assign({}, n, { read: true }); }) }; }); }; };
     self.goFoodDb = function () { return function () { self.setState({ screen: 'foodDb' }); }; };
     self.openNotif = function (action) { return function () { self.setState({ screen: action, push: null }); }; };
@@ -454,7 +529,11 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         const saved = JSON.parse(raw);
         saved.push = null; saved.toast = null; saved.confirmWipe = false;
         saved.photoStage = 'pick'; saved.captureTab = 'voice'; saved.barcodeStage = 'scan'; saved.barcodeProduct = null;
-        if (saved.stats) { saved.stats = Object.assign({ waterLowGenes: 4, waterLowDays: 5, waterDaysLogged: 8 }, saved.stats); }
+        // Compat : anciennes sauvegardes sans historique (ou avec stats/pastDays obsolètes).
+        delete saved.stats; delete saved.pastDays; delete saved.demoDay1;
+        if (!Array.isArray(saved.history)) saved.history = SEED_HISTORY;
+        if (!Array.isArray(saved.meals)) saved.meals = INITIAL.meals;
+        if (!saved.windows) saved.windows = INITIAL.windows;
         if (saved.screen !== 'onboarding') saved.screen = 'journal';
         if (typeof Notification !== 'undefined') saved.notifPermission = Notification.permission;
         self.setState(saved);
@@ -490,6 +569,41 @@ function renderValsFactory(self) {
     const FONT = 'var(--font-body)';
     const cap = (c) => c.charAt(0).toUpperCase() + c.slice(1);
 
+    // ===== Moteur d'analyse : calcule tout sur l'historique + aujourd'hui =====
+    const todayEntry = {
+      dayLabel: "aujourd'hui", dateLabel: 'jeudi 4 juillet', phase: s.cyclePhase, waterLevel: s.waterLevel || null,
+      meals: s.meals,
+      genes: s.lastGene ? [{ time: s.lastGene.timeNum != null ? s.lastGene.timeNum : 14.33, timeLabel: s.lastGene.time, intensity: s.lastGene.intensity, compounds: s.lastGene.compounds || [] }] : [],
+      ok: s.dayCheck === 'ok',
+    };
+    const allDays = (s.history || []).concat([todayEntry]);
+    const A = analyze(allDays, s.windows);
+    const gluten = A.comp.gluten || { avec: 0, sans: 0, delta: 0, ate: 0 };
+    const topLabel = A.topSuspect ? cap(A.topSuspect) : null;
+
+    // Feedback d'apprentissage : dernière gêne réelle liée au suspect principal.
+    let feedbackRef = null;
+    const fbComp = A.topSuspect || 'gluten';
+    for (let i = (s.history || []).length - 1; i >= 0; i--) {
+      const d = s.history[i];
+      const g = (d.genes || []).find((x) => (x.compounds || []).indexOf(fbComp) >= 0);
+      if (g) { feedbackRef = { dayLabel: d.dayLabel, geneTime: g.timeLabel, comp: fbComp }; break; }
+    }
+
+    // Verdict du test d'éviction : gênes de la semaine précédente vs pendant le test.
+    const histRecent = (s.history || []).slice(-7);
+    const verdictBefore = histRecent.reduce((acc, d) => acc + ((d.genes || []).length), 0);
+    const verdictAfter = s.lastGene && s.lastGene.sinceElim ? 1 : 0;
+    const verdictBeforeBars = (histRecent.length ? histRecent : new Array(7).fill({ genes: [] })).slice(-7).map((d) => {
+      const n = (d.genes || []).length;
+      return { style: "flex:1;border-radius:3px;height:" + (n ? 8 + n * 12 : 8) + "px;align-self:flex-end;background:" + (n ? AVOID : 'var(--cream-200)') };
+    });
+    while (verdictBeforeBars.length < 7) verdictBeforeBars.unshift({ style: "flex:1;border-radius:3px;height:8px;align-self:flex-end;background:var(--cream-200)" });
+    const verdictAfterBars = new Array(7).fill(0).map((_, i) => {
+      const on = i === 3 && verdictAfter > 0;
+      return { style: "flex:1;border-radius:3px;height:" + (on ? 14 : 8) + "px;align-self:flex-end;background:" + (on ? WATCH : 'var(--cream-200)') };
+    });
+
     const compMap = {};
     s.meals.forEach((m) => m.compounds.forEach((c) => { if (!compMap[c] || m.time > compMap[c].time) compMap[c] = m; }));
     const nowRows = Object.keys(compMap).map((c) => {
@@ -516,7 +630,7 @@ function renderValsFactory(self) {
     const attrib = self._attrib(s);
 
     const isToday = s.dayOffset === 0;
-    const pastDay = s.pastDays[String(s.dayOffset)];
+    const pastDay = isToday ? null : pastDayView(s.history, s.dayOffset);
     const shownMeals = isToday ? s.meals : (pastDay ? pastDay.meals : []);
     const journalMeals = shownMeals.map((m, i) => ({
       name: m.name, desc: m.desc, icon: m.icon, timeLabel: m.timeLabel,
@@ -531,7 +645,8 @@ function renderValsFactory(self) {
     const DAY_LABELS = { '-1': 'mer. 3', '-2': 'mar. 2' };
     const dayTabs = [-2, -1, 0].map((off) => {
       const sel = s.dayOffset === off;
-      const hasGene = off === 0 ? !!s.lastGene : (s.pastDays[String(off)] ? !!s.pastDays[String(off)].gene : false);
+      const pv = off === 0 ? null : pastDayView(s.history, off);
+      const hasGene = off === 0 ? !!s.lastGene : (pv ? !!pv.gene : false);
       return {
         label: off === 0 ? "Aujourd'hui" : DAY_LABELS[String(off)],
         onSelect: self.setDay(off),
@@ -608,37 +723,43 @@ function renderValsFactory(self) {
     };
     const chip = (lvl) => { const m = levelMeta(lvl); return "background:" + m.soft + ";color:" + m.txt + ";border-radius:var(--radius-pill);padding:3px 9px;font:700 10px " + FONT + ";flex-shrink:0"; };
 
-    const famRaw = [
-      { name: 'Fructanes', group: 'FODMAP', level: 'élevé', pct: 66 },
-      { name: 'Lactose', group: 'FODMAP', level: 'moyen', pct: 48 },
-      { name: 'Polyols', group: 'FODMAP', level: 'faible', pct: 20 },
-      { name: 'Histamine', group: 'amine', level: 'à surveiller', pct: 40 },
-      { name: 'Caféine', group: 'stimulant', level: 'écarté', pct: 14 },
+    // Familles de composés — niveaux calculés à partir des corrélations réelles.
+    const FAM = [
+      { id: 'fructanes', name: 'Fructanes', group: 'FODMAP' },
+      { id: 'lactose', name: 'Lactose', group: 'FODMAP' },
+      { id: 'polyols', name: 'Polyols', group: 'FODMAP' },
+      { id: 'histamine', name: 'Histamine', group: 'amine' },
+      { id: 'caffeine', name: 'Caféine', group: 'stimulant' },
     ];
-    const families = famRaw.map((f) => ({
-      name: f.name, group: f.group, level: f.level, chipStyle: chip(f.level),
-      barStyle: "width:" + f.pct + "%;height:100%;background:" + levelMeta(f.level).c,
-    }));
+    const families = FAM.map((f) => {
+      const c = A.comp[f.id];
+      const level = A.levelFromCorr(c);
+      return { name: f.name, group: f.group, level, chipStyle: chip(level), barStyle: "width:" + c.avec + "%;height:100%;background:" + levelMeta(level).c };
+    });
 
-    const suspRaw = [
-      { name: 'Produits laitiers', avec: 54, sans: 38, tag: 'à surveiller', note: 'meilleure fenêtre 6h · fiabilité moyenne' },
-      { name: 'Oignon / ail', avec: 60, sans: 24, tag: 'suspect', note: 'source de fructanes · meilleure fenêtre 8h' },
-      { name: 'Tomate', avec: 40, sans: 38, tag: 'données insuffisantes', note: 'seulement 5 repas — continue à loguer' },
-    ];
-    const suspects = suspRaw.map((x) => {
-      const m = levelMeta(x.tag);
-      const insufficient = x.tag === 'données insuffisantes';
+    // Aliments suivis — top corrélations réelles.
+    const suspects = A.foodStats.slice(0, 3).map((x) => {
+      const tag = A.levelFromCorr(x);
+      const m = levelMeta(tag);
+      const insufficient = tag === 'données insuffisantes';
       return {
-        name: x.name, tag: x.tag, ratio: x.avec + '% / ' + x.sans + '%', note: x.note, chipStyle: chip(x.tag),
+        name: x.name, tag, ratio: x.avec + '% / ' + x.sans + '%',
+        note: 'vu ' + x.ate + ' jour' + (x.ate > 1 ? 's' : '') + ' · écart ' + x.delta + ' pts' + (insufficient ? ' — continue à loguer' : ''),
+        chipStyle: chip(tag),
         rowStyle: "background:#fff;border-radius:var(--radius-sm);padding:12px 14px;box-shadow:var(--shadow-xs)" + (insufficient ? ';opacity:.65' : ''),
         barStyle: "width:" + x.avec + "%;height:100%;background:" + (insufficient ? 'var(--sand-400)' : m.c),
       };
     });
 
-    const lastMeal = s.meals[s.meals.length - 1];
-    const prevComps = lastMeal.compounds;
-    const prevHasRisk = prevComps.length > 0;
-    const prevHasGluten = prevComps.indexOf('gluten') >= 0;
+    const lastMeal = s.meals.length ? s.meals[s.meals.length - 1] : { name: '', compounds: [] };
+    const prevMealObj = { compounds: lastMeal.compounds || [] };
+    const prev = predict(prevMealObj, s.windows, A.comp);
+    const prevComps = prev.compounds;
+    const prevHasRisk = prev.hasRisk;
+    const prevHasMain = !!prev.mainSuspect;
+    const prevMainLabel = prev.mainSuspect ? cap(prev.mainSuspect) : '';
+    const prevMainWindow = prev.mainWindow;
+    const prevMainAvec = prev.mainSuspect && A.comp[prev.mainSuspect] ? A.comp[prev.mainSuspect].avec : 0;
 
     const CY = s.cycleLength, day = s.currentDay, ovDay = CY - 14;
     const P_R = 'var(--info-700)', P_F = '#8FBEE2', P_O = 'var(--info-500)', P_L = '#C7DCEF';
@@ -678,10 +799,10 @@ function renderValsFactory(self) {
     const flowNames = { leger: 'flux léger', moyen: 'flux moyen', abondant: 'flux abondant' };
     const nSym = s.cycleSymptoms.filter((x) => x.on).length;
     const cycleSavedSummary = flowNames[s.flow] + ' · ' + nSym + (nSym > 1 ? ' symptômes notés' : ' symptôme noté') + '. Le contexte du jour est relié à tes gênes digestives.';
-    const cycleLinkStat = s.stats.reglesGenes + ' de tes ' + s.stats.genes + ' gênes sont tombées pendant tes règles';
-    const waterLowGenes = s.stats.waterLowGenes || 0;
-    const waterLinkStat = waterLowGenes + ' de tes ' + s.stats.genes + ' gênes sont tombées les jours où tu étais peu hydratée';
-    const waterLinkStrong = s.stats.genes > 0 && (waterLowGenes / s.stats.genes) >= 0.5;
+    const cycleLinkStat = A.reglesGenes + ' de tes ' + A.totalGenes + ' gênes sont tombées pendant tes règles';
+    const waterLowGenes = A.waterLowGenes || 0;
+    const waterLinkStat = waterLowGenes + ' de tes ' + A.totalGenes + ' gênes sont tombées les jours où tu étais peu hydratée';
+    const waterLinkStrong = A.totalGenes > 0 && (waterLowGenes / A.totalGenes) >= 0.5;
 
     const db = self._db();
     const fdbCount = db ? db.count : 0, fdbCatCount = db ? db.categories.length : 0;
@@ -744,14 +865,20 @@ function renderValsFactory(self) {
       }),
       waterNudge: s.waterLevel === 'low' ? 'Pense à boire un peu plus demain — ça aide à calmer les FODMAPs et les crampes.' : s.waterLevel === 'ok' ? 'Encore un ou deux verres et tu y es.' : s.waterLevel === 'good' ? 'Bien joué — continue comme ça.' : '',
       waterNudgeShown: !!s.waterLevel,
-      confirmDayOk: self.confirmDayOk(), okDays: s.stats.okDays,
+      confirmDayOk: self.confirmDayOk(), okDays: A.okDays,
       journalMeals, geneSaved: !!s.lastGene,
       lastGeneTime: s.lastGene ? s.lastGene.time : '', lastGeneText: s.lastGene ? s.lastGene.text : '',
       clearGene: self.clearGene(), attributionText: attrib.text,
       geneTimeHeader: "Aujourd'hui, " + attrib.timeLabel,
       wGluten: s.windows.gluten, wLactose: s.windows.lactose, wFructanes: s.windows.fructanes,
-      statsRepas: s.stats.repas, statsGenes: s.stats.genes, glutenAvec: s.stats.glutenAvec,
-      analyseReady: !s.demoDay1, analyseEmpty: s.demoDay1, toggleDemoDay1: self.toggleDemoDay1(),
+      statsRepas: A.totalMeals, statsGenes: A.totalGenes, glutenAvec: gluten.avec,
+      analyseConfidence: A.confidence,
+      analyseReady: A.totalMeals >= 10, analyseEmpty: A.totalMeals < 10,
+      analyseProgressPct: Math.min(100, Math.round(A.totalMeals / 10 * 100)),
+      hasTopSuspect: !!A.topSuspect, topSuspectLabel: topLabel,
+      topSuspectTitle: A.topSuspect ? 'Le ' + topLabel.toLowerCase() + ' ressort nettement' : 'Pas encore de suspect net',
+      topSuspectWindow: A.topSuspect ? (s.windows[A.topSuspect] || 6) : 6,
+      glutenSans: gluten.sans,
       isProfil: s.screen === 'profil', goProfil: self.go('profil'),
       togglePushP: self.enablePush(), toggleAlerts: self.toggleFlag('alertsOn'), toggleCycleTrack: self.toggleFlag('cycleTrackOn'),
       notifPermGranted: s.notifPermission === 'granted', notifPermDenied: s.notifPermission === 'denied', notifPermPending: s.notifPermission !== 'granted',
@@ -764,29 +891,17 @@ function renderValsFactory(self) {
       cycleTrackTrack: "width:38px;height:22px;border-radius:100px;position:relative;flex-shrink:0;background:" + (s.cycleTrackOn ? INFO : 'var(--sand-400)'),
       cycleTrackKnob: "position:absolute;top:2px;width:18px;height:18px;border-radius:50%;background:#fff;" + (s.cycleTrackOn ? 'right:2px;' : 'left:2px;'),
       doExport: self.doExport(), exportDone: s.exportDone, exportIdle: !s.exportDone,
-      demoToggleLabel: s.demoDay1 ? 'Revenir à J9' : 'Voir l\'état J1',
-      avecBarStyle: "width:" + s.stats.glutenAvec + "%;height:100%;background:" + AVOID,
+      avecBarStyle: "width:" + gluten.avec + "%;height:100%;background:" + AVOID,
+      sansBarStyle: "width:" + gluten.sans + "%;height:100%;background:" + GOOD,
       cycleLinkStat,
       waterLinkStat, waterLinkBadge: waterLinkStrong ? 'lien fort' : 'à surveiller', waterLinkBadgeStyle: waterLinkStrong ? "background:var(--info-50);color:var(--info-700);border-radius:var(--radius-pill);padding:3px 9px;font:var(--fw-bold) 10px var(--font-body);flex-shrink:0" : "background:var(--cream-200);color:var(--taupe-600);border-radius:var(--radius-pill);padding:3px 9px;font:var(--fw-bold) 10px var(--font-body);flex-shrink:0",
       obSuspectNames: s.obSuspects.filter((x) => x.on && x.name !== 'Aucune idée').map((x) => x.name).join(', ') || 'aucune',
       obGlutenSuspected: s.obSuspects.some((x) => x.on && x.name === 'Gluten'),
       logMeal: self.logMeal(), saveGene: self.saveGene(),
-      goPhoto: self.goPhoto(), goValidateVoice: self.goValidateVoice(),
+      goPhoto: self.goPhoto(), goValidateVoice: self.goValidateVoice(), onPhotoConfirm: (res) => self.onPhotoConfirm(res),
       onBarcodeDetected: (code) => self.scanDetected(code),
       onVoiceResult: (res) => self.setVoiceResult(res),
-      analyzePhoto: self.analyzePhoto(), confirmPhoto: self.confirmPhoto(),
       isPhoto: s.screen === 'photo',
-      photoPick: s.photoStage === 'pick', photoScan: s.photoStage === 'scan', photoDone: s.photoStage === 'done',
-      photoDetected: self._recipe().map((d) => { const tg = self._tagsOf(d.name); return {
-        name: d.name, hasTags: tg.length > 0,
-        tags: tg.map((t) => ({ l: t.l, style: "background:var(--cream-200);color:var(--cocoa-700);border-radius:var(--radius-xs);padding:3px 9px;font:600 10.5px " + FONT })),
-        conf: d.conf,
-        dotStyle: "width:7px;height:7px;border-radius:50%;flex-shrink:0;background:" + (d.conf === 'sûr' ? GOOD : d.conf === 'moyen' ? WATCH : 'var(--sand-400)'),
-        confStyle: "font:700 10px " + FONT + ";color:" + (d.conf === 'sûr' ? GOOD_TXT : d.conf === 'moyen' ? WATCH_TXT : MUTED) + ";white-space:nowrap",
-      }; }),
-      photoCount: self._recipe().length,
-      photoFlagCount: self._recipe().filter((d) => self._tagsOf(d.name).length > 0).length,
-      photoCtaLabel: 'Vérifier ces ' + self._recipe().length + ' aliments',
       addIng: self.addIng(), validateMealName: s.pendingMeal ? s.pendingMeal.name : 'Déjeuner',
       validateSrcIcon: s.pendingMeal && s.pendingMeal.src === 'photo' ? 'ph ph-image-square' : s.pendingMeal && s.pendingMeal.src === 'recent' ? 'ph ph-clock-counter-clockwise' : s.pendingMeal && s.pendingMeal.src === 'barcode' ? 'ph ph-barcode' : 'ph ph-microphone',
       validateSrcLabel: s.pendingMeal && s.pendingMeal.src === 'photo' ? 'Depuis une photo · ' + s.pendingMeal.desc : s.pendingMeal && s.pendingMeal.src === 'recent' ? 'Repas fréquent · ' + s.pendingMeal.desc : s.pendingMeal && s.pendingMeal.src === 'barcode' ? 'Produit scanné · ' + s.pendingMeal.desc : 'Depuis la voix · ' + ((s.pendingMeal && s.pendingMeal.desc) || 'ton repas'),
@@ -826,12 +941,25 @@ function renderValsFactory(self) {
       obLessDay: self.obDaysAgo(-1), obMoreDay: self.obDaysAgo(1), obLessDur: self.obPeriodDur(-1), obMoreDur: self.obPeriodDur(1),
       obPhasePreview: 'Aujourd\'hui : J' + s.currentDay + ' · ' + phaseLabel + ' · prochaines règles ~' + fmt(daysUntilNext),
       elimWarning, elimWarnIng: glutenIng ? glutenIng.name : '',
-      prevHasRisk, prevNoRisk: !prevHasRisk, prevHasGluten,
-      prevRiskLabel: prevComps.join(' & '), prevChipLabel: lastMeal.name + ' enregistré',
+      prevHasRisk, prevNoRisk: !prevHasRisk, prevHasMain,
+      prevMainLabel, prevMainWindow, prevMainAvec,
+      prevDigestHours: '~' + prev.digestHours + 'h',
+      prevDigestPct: Math.min(100, Math.round(prev.digestHours / 24 * 100)),
+      prevDigestNote: prev.digestNote,
+      prevRiskLabel: prevComps.map(cap).join(' & '), prevChipLabel: (lastMeal.name || 'Repas') + ' enregistré',
       feedbackYes: self.answerFeedback(true), feedbackNo: self.answerFeedback(false),
+      feedbackQuestion: feedbackRef
+        ? feedbackRef.dayLabel + ' ' + feedbackRef.geneTime + ' tu avais une gêne. Le ' + feedbackRef.comp + ' du midi était-il en cause ?'
+        : 'Aide-moi à affiner : ta dernière gêne était-elle liée à ton principal suspect ?',
       feedbackMsg: s.feedbackYesAnswer
         ? 'Merci — délai perso du gluten affiné à ~' + s.windows.gluten + 'h. L\'app priorisera cette fenêtre.'
         : 'Noté — cette gêne ne comptera pas contre le gluten. Le lien est affaibli.',
+      verdictBefore, verdictAfter,
+      verdictHeadline: verdictAfter < verdictBefore
+        ? (verdictBefore - verdictAfter) + ' gêne' + (verdictBefore - verdictAfter > 1 ? 's' : '') + ' en moins sans ' + (topLabel || 'gluten').toLowerCase()
+        : 'Résultat à confirmer',
+      verdictText: 'Tes gênes sont passées de ' + verdictBefore + ' la semaine d\'avant à ' + verdictAfter + ' pendant le test. ' + (verdictAfter < verdictBefore ? "C'est un signal fort — mais pas encore une preuve." : 'Continue le test pour trancher.'),
+      verdictBeforeBars, verdictAfterBars,
       isCycle: s.screen === 'cycle', goCycle: self.go('cycle'),
       ringStyle, forecastGradient, markerDeg, phaseLabel, currentDay: day, cycleLength: CY,
       daysUntilNext, nextPeriodDate: fmt(daysUntilNext), ovDate: fmt(daysUntilOv),
@@ -875,7 +1003,7 @@ function renderValsFactory(self) {
       reintroStepLabel: 'Étape ' + (s.reintroStep || 1) + ' / 3',
       reintroPortion: (s.reintroStep || 1) === 1 ? 'une petite portion (1 tranche de pain)' : (s.reintroStep || 1) === 2 ? 'une portion normale (sandwich complet)' : 'une grande portion (pâtes + pain)',
       reintroBarStyle: "width:" + Math.round((s.reintroStep || 1) / 3 * 100) + "%;height:100%;background:var(--info-500)",
-      reintroNextLabel: (s.reintroStep || 1) >= 3 ? 'Terminer — voir le résultat (démo)' : 'Étape suivante (démo)',
+      reintroNextLabel: (s.reintroStep || 1) >= 3 ? 'Terminer — voir le résultat' : 'Étape suivante',
       isVerdict: s.screen === 'verdict', goVerdict: self.go('verdict'),
       feedbackOpen: !s.feedbackAnswered, feedbackDone: s.feedbackAnswered,
     };
@@ -1188,71 +1316,7 @@ function AppView({ V }) {
 
         {/* ===================== PHOTO ===================== */}
         {V.isPhoto && (
-        <div style={css('position:absolute;inset:0;display:flex;flex-direction:column')}>
-          <div style={css('height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 6px;flex-shrink:0;border-bottom:1px solid var(--border-soft)')}>
-            <div onClick={V.goCapture} style={css('width:46px;height:46px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--cocoa-700)')}><i className="ph ph-caret-left" style={{ fontSize: 22 }}></i></div>
-            <div style={css('font:var(--fw-bold) 14px var(--font-body);color:var(--ink);white-space:nowrap')}>Photo &amp; capture d'écran</div>
-            <div onClick={V.goJournal} style={css('width:46px;height:46px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--taupe-600)')}><i className="ph ph-x" style={{ fontSize: 19 }}></i></div>
-          </div>
-
-          {V.photoPick && (<>
-          <div style={css('flex:1;overflow-y:auto;padding:14px 18px 0')} className="ob-scroll">
-            <div style={css('font:var(--fw-bold) 18px/1.2 var(--font-display);color:var(--ink)')}>Lis une recette en photo</div>
-            <div style={css('font:var(--fw-regular) 12px/1.5 var(--font-body);color:var(--taupe-600);margin-top:6px')}>Photographie une liste d'ingrédients (livre, étiquette) ou dépose une <strong>capture d'écran</strong> — Marmiton, Instagram, tes notes. L'IA lit le texte et identifie chaque aliment + ses composés.</div>
-            <div style={css('margin-top:14px;height:196px;border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-sm)')}>
-              <ImageSlot placeholder="Dépose une photo ou capture · ou touche pour choisir" />
-            </div>
-            <div style={css('display:flex;flex-wrap:wrap;gap:7px;margin-top:12px')}>
-              <span style={css('display:flex;align-items:center;gap:5px;background:var(--cream-100);border-radius:var(--radius-pill);padding:6px 11px;font:600 11px var(--font-body);color:var(--cocoa-700)')}><i className="ph ph-book-open" style={{ fontSize: 13, color: 'var(--coral-500)' }}></i>Livre de cuisine</span>
-              <span style={css('display:flex;align-items:center;gap:5px;background:var(--cream-100);border-radius:var(--radius-pill);padding:6px 11px;font:600 11px var(--font-body);color:var(--cocoa-700)')}><i className="ph ph-device-mobile" style={{ fontSize: 13, color: 'var(--coral-500)' }}></i>Capture d'écran</span>
-              <span style={css('display:flex;align-items:center;gap:5px;background:var(--cream-100);border-radius:var(--radius-pill);padding:6px 11px;font:600 11px var(--font-body);color:var(--cocoa-700)')}><i className="ph ph-tag" style={{ fontSize: 13, color: 'var(--coral-500)' }}></i>Étiquette produit</span>
-            </div>
-            <div style={css('margin-top:12px;display:flex;gap:9px;background:var(--cream-100);border-radius:var(--radius-sm);padding:11px 13px;font:var(--fw-regular) 11px/1.45 var(--font-body);color:var(--taupe-600)')}><i className="ph-fill ph-lock-key" style={{ fontSize: 15, color: 'var(--tol-good-500)', flexShrink: 0, marginTop: 1 }}></i><div>L'image est analysée sur ton téléphone — rien n'est envoyé ni stocké en ligne.</div></div>
-          </div>
-          <div style={css('padding:12px 18px 20px;flex-shrink:0')}>
-            <div onClick={V.analyzePhoto} style={css('display:flex;align-items:center;justify-content:center;gap:8px;background:var(--coral-500);color:#fff;text-align:center;border-radius:var(--radius-md);padding:15px 0;font:var(--fw-bold) 14px var(--font-display);cursor:pointer;box-shadow:var(--shadow-brand)')}><i className="ph ph-scan" style={{ fontSize: 17 }}></i>Identifier les aliments</div>
-          </div>
-          </>)}
-
-          {V.photoScan && (
-          <div style={css('flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:0 30px;text-align:center')}>
-            <div style={css('width:96px;height:96px;border-radius:50%;background:var(--coral-50);display:flex;align-items:center;justify-content:center;color:var(--coral-500)')}><i className="ph ph-scan" style={{ fontSize: 44 }}></i></div>
-            <div><div style={css('font:var(--fw-bold) 17px var(--font-display);color:var(--ink)')}>Lecture de la liste…</div><div style={css('font:var(--fw-regular) 12px/1.5 var(--font-body);color:var(--taupe-600);margin-top:6px')}>Reconnaissance du texte, puis correspondance aliment → composés (gluten, FODMAP, histamine…).</div></div>
-            <div style={css('width:180px;height:6px;border-radius:3px;background:var(--cream-200);overflow:hidden')}><div style={css('width:70%;height:100%;background:var(--coral-500);border-radius:3px')}></div></div>
-          </div>
-          )}
-
-          {V.photoDone && (<>
-          <div style={css('flex:1;overflow-y:auto;padding:14px 18px 0')} className="ob-scroll">
-            <div style={css('display:flex;align-items:center;gap:12px;background:#fff;border-radius:var(--radius-lg);padding:12px 14px;box-shadow:var(--shadow-sm)')}>
-              <div style={css('width:52px;height:52px;border-radius:var(--radius-sm);overflow:hidden;flex-shrink:0')}>
-                <ImageSlot placeholder="recette" compact />
-              </div>
-              <div style={css('flex:1;min-width:0')}><div style={css('font:var(--fw-bold) 15px var(--font-display);color:var(--ink)')}>Dahl de lentilles corail</div><div style={css('font:var(--fw-regular) 11px var(--font-body);color:var(--taupe-600);margin-top:2px')}>{V.photoCount} aliments détectés · {V.photoFlagCount} composés à suivre</div></div>
-              <div style={css('background:var(--tol-good-50);color:var(--tol-good-700);border-radius:var(--radius-pill);padding:4px 9px;font:700 10px var(--font-body);flex-shrink:0')}>lecture OK</div>
-            </div>
-            <div style={css('font:var(--fw-bold) 12px var(--font-body);color:var(--cocoa-700);margin:16px 2px 8px')}>Aliments identifiés</div>
-            <div style={css('display:flex;flex-direction:column;gap:7px')}>
-              {V.photoDetected.map((d, i) => (
-                <div key={i} style={css('display:flex;align-items:center;gap:10px;background:#fff;border-radius:var(--radius-sm);padding:11px 13px;box-shadow:var(--shadow-xs)')}>
-                  <div style={css('flex:1;min-width:0')}>
-                    <div style={css('font:var(--fw-bold) 13px var(--font-body);color:var(--ink)')}>{d.name}</div>
-                    {d.hasTags && (
-                      <div style={css('display:flex;flex-wrap:wrap;gap:5px;margin-top:5px')}>{d.tags.map((t, j) => (<span key={j} style={css(t.style)}>{t.l}</span>))}</div>
-                    )}
-                  </div>
-                  <div style={css('display:flex;align-items:center;gap:5px;flex-shrink:0')}><span style={css(d.dotStyle)}></span><span style={css(d.confStyle)}>{d.conf}</span></div>
-                </div>
-              ))}
-            </div>
-            <div style={css('margin-top:10px;display:flex;gap:9px;background:var(--tol-watch-50);border-radius:var(--radius-sm);padding:11px 13px;font:var(--fw-regular) 11px/1.45 var(--font-body);color:var(--tol-watch-700)')}><i className="ph-fill ph-info" style={{ fontSize: 15, color: 'var(--tol-watch-500)', flexShrink: 0, marginTop: 1 }}></i><div>Vérifie la liste — l'IA peut se tromper sur un plat maison. Tu pourras décocher au moment de valider.</div></div>
-          </div>
-          <div style={css('padding:12px 18px 20px;flex-shrink:0;display:flex;gap:8px')}>
-            <div onClick={V.goPhoto} style={css('flex:1;text-align:center;background:#fff;border:1px solid var(--border-strong);color:var(--cocoa-700);border-radius:var(--radius-md);padding:14px 0;font:var(--fw-bold) 13px var(--font-body);cursor:pointer')}>Reprendre</div>
-            <div onClick={V.confirmPhoto} style={css('flex:1.5;text-align:center;background:var(--coral-500);color:#fff;border-radius:var(--radius-md);padding:14px 0;font:var(--fw-bold) 13.5px var(--font-display);cursor:pointer;box-shadow:var(--shadow-brand)')}>{V.photoCtaLabel}</div>
-          </div>
-          </>)}
-        </div>
+          <PhotoCapture onConfirm={V.onPhotoConfirm} onClose={V.goJournal} onBack={V.goCapture} />
         )}
 
         {/* ===================== VALIDATION ===================== */}
@@ -1315,8 +1379,8 @@ function AppView({ V }) {
             <div style={css('font:var(--fw-bold) 22px/1.1 var(--font-display);color:var(--ink);margin:12px 0 14px')}>Prévision des prochaines 24h</div>
             <div style={css('display:flex;flex-direction:column;gap:10px')}>
               <div style={css('background:#fff;border-radius:var(--radius-lg);padding:16px 16px 14px;box-shadow:var(--shadow-sm)')}>
-                <div style={css('display:flex;align-items:baseline;justify-content:space-between')}><div style={css('font:var(--fw-semibold) 12px var(--font-body);color:var(--cocoa-700)')}>Digestion estimée</div><div style={css('font:500 17px var(--font-mono);color:var(--tol-good-700)')}>~5h</div></div>
-                <div style={css('margin-top:12px;position:relative;height:10px;border-radius:5px;background:var(--cream-200);overflow:hidden')}><div style={css('position:absolute;left:0;top:0;height:100%;width:21%;background:var(--tol-good-500);border-radius:5px')}></div></div>
+                <div style={css('display:flex;align-items:baseline;justify-content:space-between')}><div style={css('font:var(--fw-semibold) 12px var(--font-body);color:var(--cocoa-700)')}>Digestion estimée</div><div style={css('font:500 17px var(--font-mono);color:var(--tol-good-700)')}>{V.prevDigestHours}</div></div>
+                <div style={css('margin-top:12px;position:relative;height:10px;border-radius:5px;background:var(--cream-200);overflow:hidden')}><div style={css('position:absolute;left:0;top:0;height:100%;width:' + V.prevDigestPct + '%;background:var(--tol-good-500);border-radius:5px')}></div></div>
                 {V.prevHasRisk && (<>
                   <div style={css('margin-top:14px;font:var(--fw-semibold) 12px var(--font-body);color:var(--cocoa-700);margin-bottom:6px')}>Fenêtre à risque · {V.prevRiskLabel}</div>
                   <div style={css('position:relative;height:10px;border-radius:5px;background:var(--cream-200);overflow:hidden')}><div style={css('position:absolute;left:8%;top:0;height:100%;right:0;background:repeating-linear-gradient(45deg,var(--tol-avoid-500),var(--tol-avoid-500) 5px,var(--tol-avoid-100) 5px,var(--tol-avoid-100) 10px)')}></div></div>
@@ -1326,15 +1390,15 @@ function AppView({ V }) {
                   <div style={css('margin-top:12px;font:var(--fw-regular) 11.5px/1.4 var(--font-body);color:var(--tol-good-700)')}>Aucun composé suspect coché dans ce repas — pas de fenêtre à surveiller.</div>
                 )}
               </div>
-              <div style={css('background:var(--tol-good-50);border-radius:var(--radius-lg);padding:14px 16px')}>
-                <div style={css('display:flex;align-items:center;gap:7px;font:var(--fw-bold) 13px var(--font-display);color:var(--tol-good-700)')}><i className="ph-fill ph-leaf" style={{ fontSize: 15 }}></i>Plutôt facile à digérer</div>
-                <div style={css('font:var(--fw-regular) 11.5px/1.45 var(--font-body);color:var(--tol-good-700);margin-top:4px')}>Riche en fibres, peu de graisses. L'estomac devrait se vider en ~5h.</div>
+              <div style={css('background:' + (V.prevMainAvec >= 40 ? 'var(--tol-watch-50)' : 'var(--tol-good-50)') + ';border-radius:var(--radius-lg);padding:14px 16px')}>
+                <div style={css('display:flex;align-items:center;gap:7px;font:var(--fw-bold) 13px var(--font-display);color:' + (V.prevMainAvec >= 40 ? 'var(--tol-watch-700)' : 'var(--tol-good-700)') + '')}><i className="ph-fill ph-leaf" style={{ fontSize: 15 }}></i>{V.prevMainAvec >= 40 ? 'Digestion à surveiller' : 'Plutôt facile à digérer'}</div>
+                <div style={css('font:var(--fw-regular) 11.5px/1.45 var(--font-body);color:' + (V.prevMainAvec >= 40 ? 'var(--tol-watch-700)' : 'var(--tol-good-700)') + ';margin-top:4px')}>{V.prevDigestNote}</div>
               </div>
-              {V.prevHasGluten && (
+              {V.prevHasMain && (
               <div style={css('background:var(--tol-watch-50);border-radius:var(--radius-lg);padding:14px 16px')}>
-                <div style={css('display:flex;align-items:center;justify-content:space-between')}><div style={css('display:flex;align-items:center;gap:7px;font:var(--fw-bold) 13px var(--font-display);color:var(--tol-watch-700)')}><i className="ph-fill ph-eye" style={{ fontSize: 15 }}></i>À surveiller · Gluten</div><div style={css('background:#fff;border-radius:var(--radius-pill);padding:3px 9px;font:var(--fw-bold) 10.5px var(--font-body);color:var(--tol-watch-700)')}>suspect n°1</div></div>
-                <div style={css('font:var(--fw-regular) 11.5px/1.45 var(--font-body);color:var(--tol-watch-700);margin-top:5px')}>Ton principal suspect ({V.glutenAvec}%). D'après ton historique, la gêne apparaît plutôt vers <strong>+{V.wGluten}h</strong>.</div>
-                <div onClick={V.toggleAlert} style={css('margin-top:10px;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.6);border-radius:var(--radius-sm);padding:8px 11px;cursor:pointer')}><div style={css(V.alertTrackStyle)}><div style={css(V.alertKnobStyle)}></div></div><div style={css('font:var(--fw-semibold) 11.5px var(--font-body);color:var(--tol-watch-700)')}>Me prévenir à +{V.wGluten}h</div></div>
+                <div style={css('display:flex;align-items:center;justify-content:space-between')}><div style={css('display:flex;align-items:center;gap:7px;font:var(--fw-bold) 13px var(--font-display);color:var(--tol-watch-700)')}><i className="ph-fill ph-eye" style={{ fontSize: 15 }}></i>À surveiller · {V.prevMainLabel}</div><div style={css('background:#fff;border-radius:var(--radius-pill);padding:3px 9px;font:var(--fw-bold) 10.5px var(--font-body);color:var(--tol-watch-700)')}>suspect de ce repas</div></div>
+                <div style={css('font:var(--fw-regular) 11.5px/1.45 var(--font-body);color:var(--tol-watch-700);margin-top:5px')}>Composé associé à une gêne <strong>{V.prevMainAvec}%</strong> des jours où tu en as mangé. La gêne apparaît plutôt vers <strong>+{V.prevMainWindow}h</strong>.</div>
+                <div onClick={V.toggleAlert} style={css('margin-top:10px;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.6);border-radius:var(--radius-sm);padding:8px 11px;cursor:pointer')}><div style={css(V.alertTrackStyle)}><div style={css(V.alertKnobStyle)}></div></div><div style={css('font:var(--fw-semibold) 11.5px var(--font-body);color:var(--tol-watch-700)')}>Me prévenir à +{V.prevMainWindow}h</div></div>
               </div>
               )}
             </div>
@@ -1408,7 +1472,7 @@ function AppView({ V }) {
             {V.feedbackOpen && (
               <div style={css('background:var(--coral-50);border-radius:var(--radius-lg);padding:14px 16px')}>
                 <div style={css('display:flex;align-items:center;gap:7px;font:var(--fw-bold) 12.5px var(--font-display);color:var(--coral-700);margin-bottom:3px')}><i className="ph-fill ph-sparkle" style={{ fontSize: 14 }}></i>Affine tes délais</div>
-                <div style={css('font:var(--fw-regular) 11.5px/1.45 var(--font-body);color:var(--coral-700)')}>Mardi 16h tu avais une gêne. Le <strong>gluten</strong> du midi était-il en cause ?</div>
+                <div style={css('font:var(--fw-regular) 11.5px/1.45 var(--font-body);color:var(--coral-700)')}>{V.feedbackQuestion}</div>
                 <div style={css('display:flex;gap:8px;margin-top:10px')}>
                   <div onClick={V.feedbackYes} style={css('flex:1;text-align:center;background:var(--coral-500);color:#fff;border-radius:var(--radius-sm);padding:9px 0;font:var(--fw-bold) 12px var(--font-body);cursor:pointer')}>Oui, sûrement</div>
                   <div onClick={V.feedbackNo} style={css('flex:1;text-align:center;background:#fff;border:1px solid var(--coral-200);color:var(--coral-600);border-radius:var(--radius-sm);padding:9px 0;font:var(--fw-bold) 12px var(--font-body);cursor:pointer')}>Plutôt non</div>
@@ -1441,8 +1505,7 @@ function AppView({ V }) {
         {V.isAnalyse && (
         <div style={css('position:absolute;inset:0;display:flex;flex-direction:column;overflow-y:auto;padding-bottom:84px')} className="ob-scroll">
           <div style={css('padding:16px 20px 8px;display:flex;align-items:flex-start;justify-content:space-between;gap:10px')}>
-            <div><div style={css('font:var(--fw-bold) 22px/1.1 var(--font-display);color:var(--ink)')}>Analyse</div><div style={css('font:var(--fw-regular) 12px var(--font-body);color:var(--taupe-600);margin-top:3px')}>{V.statsRepas} repas · {V.statsGenes} gênes · fenêtres testées 2h / 6h / 24h</div></div>
-            <div onClick={V.toggleDemoDay1} style={css('font:var(--fw-semibold) 10px var(--font-body);color:var(--taupe-600);border:1px solid var(--border-soft);border-radius:var(--radius-pill);padding:4px 10px;cursor:pointer;white-space:nowrap;margin-top:3px')}>{V.demoToggleLabel}</div>
+            <div><div style={css('font:var(--fw-bold) 22px/1.1 var(--font-display);color:var(--ink)')}>Analyse</div><div style={css('font:var(--fw-regular) 12px var(--font-body);color:var(--taupe-600);margin-top:3px')}>{V.statsRepas} repas · {V.statsGenes} gênes · confiance {V.analyseConfidence}</div></div>
           </div>
           {V.analyseEmpty && (
           <div style={css('padding:6px 16px 0')}>
@@ -1451,10 +1514,10 @@ function AppView({ V }) {
               <div style={css('font:var(--fw-bold) 18px/1.2 var(--font-display);color:var(--ink);margin-top:14px')}>L'enquête démarre</div>
               <div style={css('font:var(--fw-regular) 12px/1.5 var(--font-body);color:var(--taupe-600);margin-top:7px')}>Il faut un peu de matière avant les premières pistes. Continue à loguer — chaque repas compte.</div>
               <div style={css('margin-top:16px;text-align:left')}>
-                <div style={css('display:flex;justify-content:space-between;font:var(--fw-bold) 10.5px var(--font-body);color:var(--cocoa-700);margin-bottom:5px')}><span>3 repas logués</span><span>10 pour la 1ʳᵉ analyse</span></div>
-                <div style={css('height:8px;border-radius:4px;background:rgba(255,255,255,.7);overflow:hidden')}><div style={css('width:30%;height:100%;border-radius:4px;background:var(--coral-500)')}></div></div>
+                <div style={css('display:flex;justify-content:space-between;font:var(--fw-bold) 10.5px var(--font-body);color:var(--cocoa-700);margin-bottom:5px')}><span>{V.statsRepas} repas logués</span><span>10 pour la 1ʳᵉ analyse</span></div>
+                <div style={css('height:8px;border-radius:4px;background:rgba(255,255,255,.7);overflow:hidden')}><div style={css('width:' + V.analyseProgressPct + '%;height:100%;border-radius:4px;background:var(--coral-500)')}></div></div>
               </div>
-              <div style={css('font:500 10.5px var(--font-mono);color:var(--coral-600);margin-top:10px')}>première analyse estimée : vendredi</div>
+              <div style={css('font:500 10.5px var(--font-mono);color:var(--coral-600);margin-top:10px')}>encore {Math.max(0, 10 - V.statsRepas)} repas avant la première analyse</div>
             </div>
             <div style={css('display:flex;flex-direction:column;gap:7px;margin-top:12px')}>
               {[['Familles de composés', 'Se débloque à 10 repas'], ['Suspects personnels', 'Se débloque à 10 repas + 2 gênes'], ['Tests d\'éviction', 'Après ton premier suspect identifié']].map((r, i) => (
@@ -1470,16 +1533,16 @@ function AppView({ V }) {
           {V.analyseReady && (
           <div style={css('padding:6px 16px 0')}>
             <div style={css('border-radius:var(--radius-2xl);padding:18px;background:linear-gradient(155deg,var(--coral-100),var(--tol-avoid-50))')}>
-              <div style={css('display:flex;align-items:center;justify-content:space-between')}><div style={css('display:flex;align-items:center;gap:6px;font:var(--fw-bold) 11px var(--font-body);color:var(--tol-avoid-700);letter-spacing:var(--ls-wide);text-transform:uppercase')}><i className="ph-fill ph-magnifying-glass" style={{ fontSize: 13 }}></i>Principal suspect</div><div style={css('background:rgba(255,255,255,.6);border-radius:var(--radius-pill);padding:3px 9px;font:var(--fw-bold) 10px var(--font-body);color:var(--tol-avoid-700)')}>meilleure fenêtre · {V.wGluten}h</div></div>
-              <div style={css('font:var(--fw-extra) 23px/1.05 var(--font-display);color:var(--tol-avoid-700);margin:8px 0 10px')}>Le gluten ressort nettement</div>
+              <div style={css('display:flex;align-items:center;justify-content:space-between')}><div style={css('display:flex;align-items:center;gap:6px;font:var(--fw-bold) 11px var(--font-body);color:var(--tol-avoid-700);letter-spacing:var(--ls-wide);text-transform:uppercase')}><i className="ph-fill ph-magnifying-glass" style={{ fontSize: 13 }}></i>Principal suspect</div><div style={css('background:rgba(255,255,255,.6);border-radius:var(--radius-pill);padding:3px 9px;font:var(--fw-bold) 10px var(--font-body);color:var(--tol-avoid-700)')}>meilleure fenêtre · {V.topSuspectWindow}h</div></div>
+              <div style={css('font:var(--fw-extra) 23px/1.05 var(--font-display);color:var(--tol-avoid-700);margin:8px 0 10px')}>{V.topSuspectTitle}</div>
               {V.obGlutenSuspected && (
                 <div style={css('display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.6);border-radius:var(--radius-pill);padding:4px 11px;font:var(--fw-bold) 10.5px var(--font-body);color:var(--cocoa-700);margin-bottom:8px')}><i className="ph-fill ph-target" style={{ fontSize: 12, color: 'var(--coral-500)' }}></i>Ton intuition de départ — les données la confirment</div>
               )}
               <div style={css('display:flex;gap:14px;margin-top:6px')}>
                 <div style={css('flex:1')}><div style={css('font:var(--fw-bold) 10px var(--font-body);color:var(--tol-avoid-700);margin-bottom:4px')}>Jours AVEC gêne</div><div style={css('height:8px;border-radius:4px;background:rgba(255,255,255,.55);overflow:hidden')}><div style={css(V.avecBarStyle)}></div></div><div style={css('font:500 15px var(--font-mono);color:var(--tol-avoid-700);margin-top:3px')}>{V.glutenAvec}%</div></div>
-                <div style={css('flex:1')}><div style={css('font:var(--fw-bold) 10px var(--font-body);color:var(--tol-good-700);margin-bottom:4px')}>Jours SANS gêne <span style={{ fontWeight: 600, opacity: 0.75 }}>(confirmés)</span></div><div style={css('height:8px;border-radius:4px;background:rgba(255,255,255,.55);overflow:hidden')}><div style={css('width:15%;height:100%;background:var(--tol-good-500)')}></div></div><div style={css('font:500 15px var(--font-mono);color:var(--tol-good-700);margin-top:3px')}>15%</div></div>
+                <div style={css('flex:1')}><div style={css('font:var(--fw-bold) 10px var(--font-body);color:var(--tol-good-700);margin-bottom:4px')}>Jours SANS ce composé</div><div style={css('height:8px;border-radius:4px;background:rgba(255,255,255,.55);overflow:hidden')}><div style={css(V.sansBarStyle)}></div></div><div style={css('font:500 15px var(--font-mono);color:var(--tol-good-700);margin-top:3px')}>{V.glutenSans}%</div></div>
               </div>
-              <div style={css('margin-top:12px;display:inline-block;background:rgba(255,255,255,.6);border-radius:var(--radius-pill);padding:4px 11px;font:var(--fw-bold) 10.5px var(--font-body);color:var(--cocoa-700)')}>Confiance modérée · {V.statsRepas} repas · {V.okDays} j « tout roule »</div>
+              <div style={css('margin-top:12px;display:inline-block;background:rgba(255,255,255,.6);border-radius:var(--radius-pill);padding:4px 11px;font:var(--fw-bold) 10.5px var(--font-body);color:var(--cocoa-700)')}>Confiance {V.analyseConfidence} · {V.statsRepas} repas · {V.okDays} j « tout roule »</div>
             </div>
 
             <div style={css('font:var(--fw-bold) 12px var(--font-body);color:var(--cocoa-700);margin:18px 4px 8px')}>Familles de composés · niveau moléculaire</div>
@@ -1514,7 +1577,7 @@ function AppView({ V }) {
                   <div style={css('display:flex;align-items:center;justify-content:space-between;margin-bottom:7px')}><div style={css('font:var(--fw-bold) 12px var(--font-body);color:var(--coral-700)')}>Test en cours · sans gluten</div><div style={css('font:var(--fw-bold) 11px var(--font-body);color:var(--coral-600)')}>Jour 2 / 7</div></div>
                   <div style={css('height:7px;border-radius:4px;background:var(--cream-200);overflow:hidden')}><div style={css('width:28%;height:100%;background:var(--coral-500)')}></div></div>
                   <div style={css('font:var(--fw-regular) 10.5px/1.4 var(--font-body);color:var(--cocoa-700);margin-top:7px')}>Continue à loguer normalement — le Journal te préviendra si un repas contient du gluten.</div>
-                  <div onClick={V.finishElim} style={css('margin-top:9px;display:inline-flex;align-items:center;gap:5px;font:var(--fw-bold) 11px var(--font-body);color:var(--coral-600);cursor:pointer;text-decoration:underline')}>Simuler la fin du test (démo)<i className="ph ph-arrow-right" style={{ fontSize: 11 }}></i></div>
+                  <div onClick={V.finishElim} style={css('margin-top:9px;display:inline-flex;align-items:center;gap:5px;font:var(--fw-bold) 11px var(--font-body);color:var(--coral-600);cursor:pointer;text-decoration:underline')}>Marquer le test comme terminé<i className="ph ph-arrow-right" style={{ fontSize: 11 }}></i></div>
                 </div>
               )}
               {V.elimDone && (
@@ -1786,19 +1849,19 @@ function AppView({ V }) {
           <div style={css('flex:1;overflow-y:auto;padding:16px 18px 0')} className="ob-scroll">
             <div style={css('border-radius:var(--radius-2xl);padding:20px;background:linear-gradient(155deg,var(--tol-good-50),var(--cream-100));text-align:center')}>
               <div style={css('width:54px;height:54px;border-radius:50%;background:var(--tol-good-500);color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto')}><i className="ph-fill ph-seal-check" style={{ fontSize: 28 }}></i></div>
-              <div style={css('font:var(--fw-extra) 22px/1.15 var(--font-display);color:var(--tol-good-700);margin-top:12px')}>7 jours sans gluten : net mieux</div>
-              <div style={css('font:var(--fw-regular) 12px/1.5 var(--font-body);color:var(--cocoa-700);margin-top:8px')}>Tes gênes sont passées de <strong>5 sur la semaine d'avant</strong> à <strong>1 pendant le test</strong>. C'est un signal fort — mais pas encore une preuve.</div>
+              <div style={css('font:var(--fw-extra) 22px/1.15 var(--font-display);color:var(--tol-good-700);margin-top:12px')}>{V.verdictHeadline}</div>
+              <div style={css('font:var(--fw-regular) 12px/1.5 var(--font-body);color:var(--cocoa-700);margin-top:8px')}>{V.verdictText}</div>
             </div>
             <div style={css('display:flex;gap:9px;margin-top:12px')}>
               <div style={css('flex:1;background:#fff;border-radius:var(--radius-lg);padding:13px 14px;box-shadow:var(--shadow-xs)')}>
                 <div style={css('font:700 10px var(--font-body);color:var(--taupe-600);text-transform:uppercase;letter-spacing:var(--ls-wide)')}>Avant · 7 j</div>
-                <div style={css('display:flex;align-items:baseline;gap:4px;margin-top:6px')}><div style={css('font:500 26px var(--font-mono);color:var(--tol-avoid-500)')}>5</div><div style={css('font:600 10.5px var(--font-body);color:var(--taupe-600)')}>gênes</div></div>
-                <div style={css('display:flex;gap:3px;margin-top:8px')}><span style={css('flex:1;height:22px;border-radius:3px;background:var(--tol-avoid-500)')}></span><span style={css('flex:1;height:14px;border-radius:3px;background:var(--tol-avoid-500);align-self:flex-end')}></span><span style={css('flex:1;height:26px;border-radius:3px;background:var(--tol-avoid-500)')}></span><span style={css('flex:1;height:8px;border-radius:3px;background:var(--cream-200);align-self:flex-end')}></span><span style={css('flex:1;height:18px;border-radius:3px;background:var(--tol-avoid-500);align-self:flex-end')}></span><span style={css('flex:1;height:8px;border-radius:3px;background:var(--cream-200);align-self:flex-end')}></span><span style={css('flex:1;height:22px;border-radius:3px;background:var(--tol-avoid-500)')}></span></div>
+                <div style={css('display:flex;align-items:baseline;gap:4px;margin-top:6px')}><div style={css('font:500 26px var(--font-mono);color:var(--tol-avoid-500)')}>{V.verdictBefore}</div><div style={css('font:600 10.5px var(--font-body);color:var(--taupe-600)')}>{V.verdictBefore > 1 ? 'gênes' : 'gêne'}</div></div>
+                <div style={css('display:flex;gap:3px;margin-top:8px;height:26px;align-items:flex-end')}>{V.verdictBeforeBars.map((b, i) => (<span key={i} style={css(b.style)}></span>))}</div>
               </div>
               <div style={css('flex:1;background:#fff;border-radius:var(--radius-lg);padding:13px 14px;box-shadow:var(--shadow-xs)')}>
                 <div style={css('font:700 10px var(--font-body);color:var(--taupe-600);text-transform:uppercase;letter-spacing:var(--ls-wide)')}>Pendant · 7 j</div>
-                <div style={css('display:flex;align-items:baseline;gap:4px;margin-top:6px')}><div style={css('font:500 26px var(--font-mono);color:var(--tol-good-700)')}>1</div><div style={css('font:600 10.5px var(--font-body);color:var(--taupe-600)')}>gêne</div></div>
-                <div style={css('display:flex;gap:3px;margin-top:8px')}><span style={css('flex:1;height:8px;border-radius:3px;background:var(--cream-200);align-self:flex-end')}></span><span style={css('flex:1;height:8px;border-radius:3px;background:var(--cream-200);align-self:flex-end')}></span><span style={css('flex:1;height:14px;border-radius:3px;background:var(--tol-watch-500);align-self:flex-end')}></span><span style={css('flex:1;height:8px;border-radius:3px;background:var(--cream-200);align-self:flex-end')}></span><span style={css('flex:1;height:8px;border-radius:3px;background:var(--cream-200);align-self:flex-end')}></span><span style={css('flex:1;height:8px;border-radius:3px;background:var(--cream-200);align-self:flex-end')}></span><span style={css('flex:1;height:8px;border-radius:3px;background:var(--cream-200);align-self:flex-end')}></span></div>
+                <div style={css('display:flex;align-items:baseline;gap:4px;margin-top:6px')}><div style={css('font:500 26px var(--font-mono);color:var(--tol-good-700)')}>{V.verdictAfter}</div><div style={css('font:600 10.5px var(--font-body);color:var(--taupe-600)')}>{V.verdictAfter > 1 ? 'gênes' : 'gêne'}</div></div>
+                <div style={css('display:flex;gap:3px;margin-top:8px;height:26px;align-items:flex-end')}>{V.verdictAfterBars.map((b, i) => (<span key={i} style={css(b.style)}></span>))}</div>
               </div>
             </div>
             <div style={css('margin-top:12px;background:var(--tol-watch-50);border-radius:var(--radius-lg);padding:14px 16px')}>
@@ -1942,7 +2005,7 @@ function AppView({ V }) {
         </div>
         )}
 
-        {/* ===================== PUSH NOTIFICATION (démo) ===================== */}
+        {/* ===================== PUSH NOTIFICATION (bannière in-app) ===================== */}
         {V.pushShown && (
         <div onClick={V.tapPush} style={css('position:absolute;top:12px;left:12px;right:12px;display:flex;gap:11px;align-items:flex-start;background:rgba(43,34,30,.94);color:#fff;border-radius:18px;padding:12px 13px;box-shadow:var(--shadow-md);z-index:50;cursor:pointer')}>
           <div style={css('width:34px;height:34px;border-radius:9px;background:var(--coral-500);display:flex;align-items:center;justify-content:center;flex-shrink:0')}><i className={V.pushIconCls} style={{ fontSize: 18, color: '#fff' }}></i></div>

@@ -18,6 +18,9 @@ base de connaissances alimentaire des ~400 aliments.
 - Icônes : **Phosphor** (`@phosphor-icons/web`, CDN) — le seul système d'icônes du DS
 - **Caméra code-barres** : `getUserMedia` + **ZXing** (`@zxing/browser`) — décodage réel
 - **Reconnaissance vocale** : **Web Speech API** (`fr-FR`) + extraction d'aliments depuis la base
+- **OCR photo** : **Tesseract.js** (lecture locale d'étiquettes / captures) + extraction d'aliments
+- **Moteur d'analyse** (`lib/analysis.js`) : corrélations composé/aliment calculées sur les journées réelles
+- **Export réel** : données en **JSON** et rapport **PDF** (jsPDF), suppression réelle des données
 - Aucune base de données serveur : état local persistant via `localStorage`
 
 ## Démarrer en local
@@ -52,6 +55,26 @@ variable d'environnement requise. Le build par défaut (`next build`) suffit.
 - **Cycle** — anneau de phases, prévisions, flux & symptômes, historique
 - **Profil** — notifications, suivi, base alimentaire, export PDF (démo), gestion des données
 - **Base alimentaire** — ~400 aliments par catégorie et leurs composés (FODMAP, gluten, histamine, caféine)
+
+## Tout est réel — aucune maquette
+
+Chaque bouton effectue une action réelle :
+
+- **Analyse / Prévision / Verdict / corrélations cycle & hydratation** : entièrement
+  **calculés** par `lib/analysis.js` à partir des repas et gênes enregistrés
+  (historique de départ de ~10 jours dans `lib/seed.js`, alimenté par ce que tu
+  logues). L'écran passe en « L'enquête démarre » tant qu'il manque de données.
+- **Dictée** : Web Speech API réelle → aliments extraits de la base.
+- **Photo** : OCR Tesseract.js réelle → aliments extraits du texte lu.
+- **Code-barres** : caméra (ZXing) + saisie manuelle → Open Food Facts en direct.
+- **Exporter mes données** : télécharge un vrai fichier **JSON**.
+- **Exporter le rapport PDF** : génère un vrai **PDF** (jsPDF) avec tes statistiques.
+- **Tout supprimer** : efface réellement `localStorage` et repart d'un profil vierge.
+- **Notifications** : vraie permission navigateur + notifications système + bannière in-app.
+
+Seuls « Montre connectée » et « Stress · sommeil » restent marqués **« bientôt »**
+(intégrations matérielles hors périmètre), affichés désactivés — jamais comme des
+boutons fonctionnels.
 
 ## Note santé
 
