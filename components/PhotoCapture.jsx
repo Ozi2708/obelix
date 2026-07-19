@@ -9,6 +9,7 @@ import OBELIX_FOODS from '../lib/foodDb';
 // Rien n'est envoyé en ligne (le moteur OCR tourne dans le navigateur).
 export default function PhotoCapture({ onConfirm, onClose, onBack }) {
   const inputRef = useRef(null);
+  const cameraRef = useRef(null);
   const [file, setFile] = useState(null);
   const [imgUrl, setImgUrl] = useState(null);
   const [over, setOver] = useState(false);
@@ -16,6 +17,7 @@ export default function PhotoCapture({ onConfirm, onClose, onBack }) {
   const [progress, setProgress] = useState(0);
   const [foods, setFoods] = useState([]);
   const [ocrText, setOcrText] = useState('');
+  const [showText, setShowText] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => () => { if (imgUrl) URL.revokeObjectURL(imgUrl); }, [imgUrl]);
@@ -31,7 +33,7 @@ export default function PhotoCapture({ onConfirm, onClose, onBack }) {
 
   async function runOcr() {
     if (!file) { setError('Ajoute d\'abord une photo à analyser.'); return; }
-    setStage('scan'); setProgress(0); setError(null);
+    setStage('scan'); setProgress(0); setError(null); setShowText(false);
     try {
       const Tesseract = (await import('tesseract.js')).default;
       const { data } = await Tesseract.recognize(file, 'fra', {
@@ -66,12 +68,12 @@ export default function PhotoCapture({ onConfirm, onClose, onBack }) {
       {stage === 'pick' && (
         <>
           <div className="ob-scroll" style={{ flex: 1, overflowY: 'auto', padding: '14px 18px 0' }}>
-            <div style={{ font: 'var(--fw-bold) 18px/1.2 var(--font-display)', color: 'var(--ink)' }}>Lis une recette en photo</div>
+            <div style={{ font: 'var(--fw-bold) 18px/1.2 var(--font-display)', color: 'var(--ink)' }}>Prends ton plat ou une recette en photo</div>
             <div style={{ font: 'var(--fw-regular) 12px/1.5 var(--font-body)', color: 'var(--taupe-600)', marginTop: 6 }}>
-              Photographie une liste d&apos;ingrédients (livre, étiquette) ou dépose une <strong>capture d&apos;écran</strong>. L&apos;OCR lit le texte sur ton téléphone et identifie chaque aliment + ses composés.
+              Photographie ton plat, une liste d&apos;ingrédients (livre, étiquette) ou dépose une <strong>capture d&apos;écran</strong>. L&apos;OCR lit le texte sur ton téléphone et en <strong>extrait les ingrédients</strong> + leurs composés.
             </div>
             <div
-              onClick={() => inputRef.current && inputRef.current.click()}
+              onClick={() => cameraRef.current && cameraRef.current.click()}
               onDragOver={(e) => { e.preventDefault(); setOver(true); }}
               onDragLeave={() => setOver(false)}
               onDrop={(e) => { e.preventDefault(); setOver(false); pick(e.dataTransfer.files); }}
@@ -89,12 +91,30 @@ export default function PhotoCapture({ onConfirm, onClose, onBack }) {
               ) : (
                 <>
                   <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(216,104,22,.1)', color: 'var(--coral-500)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <i className="ph ph-image-square" style={{ fontSize: 22 }}></i>
+                    <i className="ph ph-camera" style={{ fontSize: 22 }}></i>
                   </div>
-                  <div style={{ font: '600 11.5px var(--font-body)', color: 'var(--taupe-600)', lineHeight: 1.4 }}>Dépose une photo ou capture · ou touche pour choisir</div>
+                  <div style={{ font: '600 11.5px var(--font-body)', color: 'var(--taupe-600)', lineHeight: 1.4 }}>Touche pour ouvrir l&apos;appareil photo</div>
                 </>
               )}
+              {/* Ouvre directement l'appareil photo sur mobile (capture) */}
+              <input ref={cameraRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={(e) => pick(e.target.files)} />
+              {/* Sélection depuis la galerie / les fichiers */}
               <input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => pick(e.target.files)} />
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <div
+                onClick={() => cameraRef.current && cameraRef.current.click()}
+                style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, background: 'var(--coral-500)', color: '#fff', borderRadius: 'var(--radius-md)', padding: '12px 0', font: 'var(--fw-bold) 12.5px var(--font-body)', cursor: 'pointer', boxShadow: 'var(--shadow-brand)' }}
+              >
+                <i className="ph ph-camera" style={{ fontSize: 16 }}></i>Prendre une photo
+              </div>
+              <div
+                onClick={() => inputRef.current && inputRef.current.click()}
+                style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, background: '#fff', color: 'var(--cocoa-700)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-md)', padding: '12px 0', font: 'var(--fw-bold) 12.5px var(--font-body)', cursor: 'pointer' }}
+              >
+                <i className="ph ph-image-square" style={{ fontSize: 16 }}></i>Galerie / fichier
+              </div>
             </div>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
@@ -184,8 +204,16 @@ export default function PhotoCapture({ onConfirm, onClose, onBack }) {
 
             {ocrText && (
               <>
-                <div style={{ font: 'var(--fw-bold) 12px var(--font-body)', color: 'var(--cocoa-700)', margin: '16px 2px 8px' }}>Texte lu</div>
-                <div style={{ background: '#fff', borderRadius: 'var(--radius-sm)', padding: '11px 13px', boxShadow: 'var(--shadow-xs)', font: 'var(--fw-regular) 11px/1.5 var(--font-body)', color: 'var(--taupe-600)', maxHeight: 96, overflowY: 'auto', whiteSpace: 'pre-wrap' }} className="ob-scroll">{ocrText}</div>
+                <div
+                  onClick={() => setShowText((v) => !v)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '16px 2px 8px', cursor: 'pointer', color: 'var(--taupe-600)' }}
+                >
+                  <i className={showText ? 'ph ph-caret-down' : 'ph ph-caret-right'} style={{ fontSize: 14 }}></i>
+                  <span style={{ font: 'var(--fw-bold) 12px var(--font-body)' }}>Voir le texte lu par l&apos;OCR</span>
+                </div>
+                {showText && (
+                  <div style={{ background: '#fff', borderRadius: 'var(--radius-sm)', padding: '11px 13px', boxShadow: 'var(--shadow-xs)', font: 'var(--fw-regular) 11px/1.5 var(--font-body)', color: 'var(--taupe-600)', maxHeight: 120, overflowY: 'auto', whiteSpace: 'pre-wrap' }} className="ob-scroll">{ocrText}</div>
+                )}
               </>
             )}
           </div>
