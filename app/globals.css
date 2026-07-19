@@ -8,6 +8,25 @@
 
 * {
   box-sizing: border-box;
+  /* Supprime le rectangle bleu de surbrillance au tap sur mobile (iOS/Android) */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Pas de halo/rectangle de focus au clic sur les éléments interactifs
+   (le focus clavier reste géré par :focus-visible pour l'accessibilité) */
+button,
+[role='button'],
+a,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+button:focus:not(:focus-visible),
+[role='button']:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
 }
 
 html,

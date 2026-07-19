@@ -6,7 +6,7 @@ import VoiceCapture from './VoiceCapture';
 import PhotoCapture from './PhotoCapture';
 import OBELIX_FOODS from '../lib/foodDb';
 import { analyze, predict, cap as capComp } from '../lib/analysis';
-import { SEED_HISTORY, pastDayView } from '../lib/seed';
+import { pastDayView } from '../lib/seed';
 
 /* Convert a CSS declaration string ("prop:val;prop:val") into a React style
    object, so the design-handoff inline styles can be ported verbatim. */
@@ -49,27 +49,13 @@ const INITIAL = {
   toast: null, confirmWipe: false, addedCount: 0,
   periodDuration: 5,
   push: null,
-  notifs: [
-    { id: 'n1', icon: 'ph-timer', color: 'watch', title: 'Fenêtre à risque · gluten', text: 'Pâtes du midi — surveillance jusque ~17:40.', time: '13:40', read: false, action: 'now' },
-    { id: 'n2', icon: 'ph-bell-ringing', color: 'good', title: 'Bilan du soir · 21:00', text: 'Aucune gêne aujourd\'hui ? Confirme en 1 tap — et un mot sur ton hydratation.', time: 'hier', read: false, action: 'journal' },
-    { id: 'n3', icon: 'ph-drop', color: 'info', title: 'Règles bientôt', text: 'Prévues dans 2 jours — tes gênes peuvent augmenter.', time: 'hier', read: true, action: 'cycle' },
-    { id: 'n4', icon: 'ph-chart-line-up', color: 'coral', title: 'Analyse mise à jour', text: 'Le gluten reste ton suspect n°1 (confiance modérée).', time: 'lun.', read: true, action: 'analyse' },
-  ],
-  meals: [
-    { name: 'Petit-déjeuner', desc: 'Yaourt, granola, miel', time: 8.2, timeLabel: '08:12', icon: 'ph-coffee', compounds: ['lactose', 'fructanes'] },
-  ],
+  // Lancement complet : profil vierge, aucune donnée pré-remplie.
+  notifs: [],
+  meals: [],
   mealLogged: false,
   dayOffset: 0,
-  history: SEED_HISTORY,
-  recents: [
-    { name: 'Petit-déj habituel', desc: 'Yaourt, granola, miel', icon: 'ph-coffee', count: 6 },
-    { name: 'Sandwich poulet', desc: 'Pain, poulet, mayonnaise, salade', icon: 'ph-hamburger', count: 5 },
-    { name: 'Pâtes pesto', desc: 'Pâtes, pesto, parmesan', icon: 'ph-bowl-food', count: 5 },
-    { name: 'Salade riz thon', desc: 'Riz, thon, tomate, huile d\'olive', icon: 'ph-bowl-food', count: 4 },
-    { name: 'Wrap poulet avocat', desc: 'Wrap, poulet, avocat, salade', icon: 'ph-hamburger', count: 3 },
-    { name: 'Soupe miso saumon', desc: 'Soupe miso, saumon, riz', icon: 'ph-bowl-food', count: 2 },
-    { name: 'Yaourt fruits rouges', desc: 'Yaourt, fraise, framboise, miel', icon: 'ph-coffee', count: 2 },
-  ],
+  history: [],
+  recents: [],
   recentToast: null,
   voice: null,
   dayCheck: 'open',
@@ -523,14 +509,14 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem('obelix_manon_state_v1');
+      const raw = localStorage.getItem('obelix_manon_state_v2');
       if (raw) {
         const saved = JSON.parse(raw);
         saved.push = null; saved.toast = null; saved.confirmWipe = false;
         saved.photoStage = 'pick'; saved.captureTab = 'voice'; saved.barcodeStage = 'scan'; saved.barcodeProduct = null;
         // Compat : anciennes sauvegardes sans historique (ou avec stats/pastDays obsolètes).
         delete saved.stats; delete saved.pastDays; delete saved.demoDay1;
-        if (!Array.isArray(saved.history)) saved.history = SEED_HISTORY;
+        if (!Array.isArray(saved.history)) saved.history = [];
         if (!Array.isArray(saved.meals)) saved.meals = INITIAL.meals;
         if (!saved.windows) saved.windows = INITIAL.windows;
         if (saved.screen !== 'onboarding') saved.screen = 'journal';
@@ -546,7 +532,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
   useEffect(() => {
     clearTimeout(self._saveT);
     self._saveT = setTimeout(function () {
-      try { localStorage.setItem('obelix_manon_state_v1', JSON.stringify(stateRef.current)); } catch (e) {}
+      try { localStorage.setItem('obelix_manon_state_v2', JSON.stringify(stateRef.current)); } catch (e) {}
     }, 400);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
