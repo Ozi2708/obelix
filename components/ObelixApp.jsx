@@ -32,6 +32,10 @@ function css(str) {
 // Types de repas classiques proposés à la validation.
 const MEAL_TYPES = ['Petit-déjeuner', 'Déjeuner', 'Goûter', 'Dîner', 'Encas'];
 
+// Onglets secondaires de la barre de navigation : le retour Android depuis l'un
+// d'eux ramène au Journal (écran d'accueil) plutôt que de fermer l'app.
+const NAV_TABS = ['cycle', 'analyse', 'profil', 'now'];
+
 const INITIAL = {
   screen: 'onboarding',
   obStep: 0,
@@ -124,6 +128,9 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
   const stateRef = useRef(state);
   stateRef.current = state;
   const ctrlRef = useRef(null);
+  // Pile logique d'écrans pour la navigation « retour » Android (geste/bouton).
+  const navStackRef = useRef(null);
+  const poppingRef = useRef(false);
 
   if (!ctrlRef.current) {
     const self = {};
@@ -574,6 +581,60 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
     }, 400);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
+
+  // ===== Navigation « retour » façon Android =====
+  // Le geste/bouton retour revient à l'écran précédent au lieu de fermer l'app ;
+  // il ne ferme qu'une fois arrivé à l'écran racine (Journal / onboarding).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    navStackRef.current = [self.state.screen || 'journal'];
+    // Arme une entrée d'historique : sans elle, le geste retour sort de l'app.
+    try { window.history.pushState({ ob: true }, ''); } catch (e) {}
+
+    const onPop = () => {
+      const stack = navStackRef.current || [];
+      if (stack.length > 1) {
+        // Retour dans l'app : dépile, affiche l'écran précédent, et ré-arme
+        // l'historique pour intercepter le prochain geste.
+        stack.pop();
+        const prev = stack[stack.length - 1];
+        poppingRef.current = true;
+        self.setState({ screen: prev, push: null, toast: null, confirmWipe: false });
+        try { window.history.pushState({ ob: true }, ''); } catch (e) {}
+      } else {
+        // À la racine : on laisse réellement quitter l'application.
+        window.removeEventListener('popstate', onPop);
+        try { window.history.back(); } catch (e) {}
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Maintient la pile logique à chaque changement d'écran (hors « retour »).
+  useEffect(() => {
+    const stack = navStackRef.current;
+    if (!stack) return;
+    if (poppingRef.current) { poppingRef.current = false; return; }
+    const scr = state.screen;
+    const top = stack[stack.length - 1];
+    if (scr === top) return;
+    if (scr === 'journal' || scr === 'onboarding') {
+      // Écran racine → on réinitialise la pile (le retour fermera l'app).
+      navStackRef.current = [scr];
+    } else if (NAV_TABS.indexOf(scr) >= 0) {
+      // Onglet secondaire → le retour ramène au Journal.
+      navStackRef.current = ['journal', scr];
+    } else if (stack.length >= 2 && stack[stack.length - 2] === scr) {
+      // Retour interne (bouton « précédent » d'un écran) → on dépile.
+      stack.pop();
+    } else {
+      // Sous-écran → on empile.
+      stack.push(scr);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.screen]);
 
   const V = self.renderVals();
   return <AppView V={V} />;
