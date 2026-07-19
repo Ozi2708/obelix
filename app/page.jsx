@@ -4,11 +4,10 @@ export default function Page() {
   return (
     <main
       style={{
-        minHeight: '100vh',
+        minHeight: '100dvh',
         display: 'flex',
-        alignItems: 'center',
         justifyContent: 'center',
-        padding: '24px 0',
+        background: 'var(--cream-100)',
       }}
     >
       <ObelixApp />

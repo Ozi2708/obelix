@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import PhoneFrame from './PhoneFrame';
 import CameraScanner from './CameraScanner';
 import VoiceCapture from './VoiceCapture';
 import PhotoCapture from './PhotoCapture';
@@ -1012,7 +1011,19 @@ function renderValsFactory(self) {
 
 function AppView({ V }) {
   return (
-    <PhoneFrame>
+    <div
+      style={{
+        position: 'relative',
+        width: '100%',
+        maxWidth: 480,
+        height: '100dvh',
+        margin: '0 auto',
+        overflow: 'hidden',
+        background: 'var(--cream-50)',
+        color: 'var(--cocoa-800)',
+        fontFamily: 'var(--font-body)',
+      }}
+    >
       <div style={css('position:absolute;inset:0;background:var(--cream-50);font-family:var(--font-body);color:var(--cocoa-800);overflow:hidden')}>
 
         {/* ===================== ONBOARDING ===================== */}
@@ -2019,6 +2030,6 @@ function AppView({ V }) {
         )}
 
       </div>
-    </PhoneFrame>
+    </div>
   );
 }
