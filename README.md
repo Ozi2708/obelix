@@ -16,7 +16,9 @@ base de connaissances alimentaire des ~400 aliments.
 - Design system Obélix : tokens CSS dans `app/tokens/` (importés via `app/globals.css`)
 - Typographie : **Bricolage Grotesque** (display), **Nunito Sans** (UI), **DM Mono** (données) — Google Fonts
 - Icônes : **Phosphor** (`@phosphor-icons/web`, CDN) — le seul système d'icônes du DS
-- Aucune base de données : état local persistant via `localStorage`
+- **Caméra code-barres** : `getUserMedia` + **ZXing** (`@zxing/browser`) — décodage réel
+- **Reconnaissance vocale** : **Web Speech API** (`fr-FR`) + extraction d'aliments depuis la base
+- Aucune base de données serveur : état local persistant via `localStorage`
 
 ## Démarrer en local
 
@@ -58,12 +60,23 @@ Obélix **observe, ne diagnostique pas**. Le vocabulaire reste prudent
 rouge est **toujours** accompagnée d'un label + pictogramme, et l'app invite à
 parler à un professionnel de santé.
 
-## Caméra — non implémentée
+## Caméra & reconnaissance vocale — fonctionnelles
 
-Le scanner de code-barres simule la caméra ; seule la **saisie manuelle** (13
-chiffres) est fonctionnelle et interroge Open Food Facts en direct. Une vraie
-caméra (`getUserMedia` + `@zxing/library` ou `quagga2`) est un choix technique
-à valider avant implémentation.
+- **Caméra code-barres** (`components/CameraScanner.jsx`) : ouvre la caméra
+  arrière via `navigator.mediaDevices.getUserMedia` et décode les codes
+  EAN/UPC en direct avec **ZXing** (`@zxing/browser`, importé dynamiquement).
+  Le code détecté interroge Open Food Facts. Nécessite un **contexte sécurisé
+  (HTTPS)** — c'est le cas sur Vercel ; en l'absence de caméra ou de permission,
+  un message clair invite à la saisie manuelle. Le flux vidéo reste sur
+  l'appareil, rien n'est envoyé.
+- **Reconnaissance vocale** (`components/VoiceCapture.jsx`) : dictée réelle via
+  la **Web Speech API** (`SpeechRecognition`, `fr-FR`). Le transcript est
+  analysé contre la base des ~400 aliments pour en extraire les ingrédients,
+  que l'utilisateur confirme/ajuste à l'étape de validation. Repli sur un
+  exemple scripté si le navigateur ne supporte pas l'API.
+
+> La saisie manuelle du code-barres (13 chiffres) reste toujours disponible et
+> interroge Open Food Facts en direct.
 
 ## Structure
 

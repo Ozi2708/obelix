@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import ImageSlot from './ImageSlot';
 import PhoneFrame from './PhoneFrame';
+import CameraScanner from './CameraScanner';
+import VoiceCapture from './VoiceCapture';
 import OBELIX_FOODS from '../lib/foodDb';
 
 /* Convert a CSS declaration string ("prop:val;prop:val") into a React style
@@ -79,6 +81,7 @@ const INITIAL = {
     { name: 'Yaourt fruits rouges', desc: 'Yaourt, fraise, framboise, miel', icon: 'ph-coffee', count: 2 },
   ],
   recentToast: null,
+  voice: null,
   stats: { repas: 24, genes: 6, glutenAvec: 82, reglesGenes: 9, okDays: 4, waterLowGenes: 4, waterLowDays: 5, waterDaysLogged: 8 },
   dayCheck: 'open',
   notifPermission: 'unsupported',
@@ -243,6 +246,10 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
     self.fillBarcodeDemo = function (code) { return function () { self.setState({ barcodeInput: code }); self._runBarcodeSearch(code); }; };
     self.backToScan = function () { return function () { self.setState({ barcodeStage: 'scan', barcodeProduct: null }); }; };
     self.searchBarcode = function () { return function () { self._runBarcodeSearch((self.state.barcodeInput || '').trim()); }; };
+    // Camera barcode scan → same pipeline as manual entry.
+    self.scanDetected = function (code) { const c = (code || '').trim(); if (!c) return; self.setState({ barcodeInput: c }); self._runBarcodeSearch(c); };
+    // Speech-to-text result (or null to reset).
+    self.setVoiceResult = function (res) { self.setState({ voice: res }); };
     self._runBarcodeSearch = function (code) {
       if (!code) return;
       const demo = self._offDemo().find(function (p) { return p.barcode === code; });
@@ -379,7 +386,23 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
     self._extras = function () { return ['Huile d\'olive', 'Beurre', 'Sauce soja', 'Sucre']; };
     self._toast = function (msg) { self.setState({ toast: msg }); clearTimeout(self._tt); self._tt = setTimeout(function () { self.setState({ toast: null }); }, 2600); };
     self.goPhoto = function () { return function () { self.setState({ screen: 'photo', photoStage: 'pick' }); }; };
-    self.goValidateVoice = function () { return function () { self.setState({ ings: self._voiceIngs(), pendingMeal: { name: 'Déjeuner', desc: 'Sandwich poulet, salade', icon: 'ph-hamburger', src: 'voice' }, screen: 'validate' }); }; };
+    self.goValidateVoice = function () {
+      return function () {
+        const v = self.state.voice;
+        let ings, desc;
+        if (v && v.foodNames && v.foodNames.length) {
+          ings = self._ingsFrom(v.foodNames);
+          desc = v.foodNames.join(', ');
+        } else if (v && v.transcript) {
+          ings = [{ name: v.transcript.charAt(0).toUpperCase() + v.transcript.slice(1), tags: [], checked: true }];
+          desc = v.transcript;
+        } else {
+          ings = self._voiceIngs();
+          desc = 'Sandwich poulet, salade';
+        }
+        self.setState({ ings: ings, pendingMeal: { name: 'Déjeuner', desc: desc, icon: 'ph-hamburger', src: 'voice' }, screen: 'validate' });
+      };
+    };
     self.analyzePhoto = function () { return function () { self.setState({ photoStage: 'scan' }); clearTimeout(self._pt); self._pt = setTimeout(function () { self.setState({ photoStage: 'done' }); }, 1200); }; };
     self.confirmPhoto = function () {
       return function () {
@@ -749,6 +772,8 @@ function renderValsFactory(self) {
       obGlutenSuspected: s.obSuspects.some((x) => x.on && x.name === 'Gluten'),
       logMeal: self.logMeal(), saveGene: self.saveGene(),
       goPhoto: self.goPhoto(), goValidateVoice: self.goValidateVoice(),
+      onBarcodeDetected: (code) => self.scanDetected(code),
+      onVoiceResult: (res) => self.setVoiceResult(res),
       analyzePhoto: self.analyzePhoto(), confirmPhoto: self.confirmPhoto(),
       isPhoto: s.screen === 'photo',
       photoPick: s.photoStage === 'pick', photoScan: s.photoStage === 'scan', photoDone: s.photoStage === 'done',
@@ -764,7 +789,7 @@ function renderValsFactory(self) {
       photoCtaLabel: 'Vérifier ces ' + self._recipe().length + ' aliments',
       addIng: self.addIng(), validateMealName: s.pendingMeal ? s.pendingMeal.name : 'Déjeuner',
       validateSrcIcon: s.pendingMeal && s.pendingMeal.src === 'photo' ? 'ph ph-image-square' : s.pendingMeal && s.pendingMeal.src === 'recent' ? 'ph ph-clock-counter-clockwise' : s.pendingMeal && s.pendingMeal.src === 'barcode' ? 'ph ph-barcode' : 'ph ph-microphone',
-      validateSrcLabel: s.pendingMeal && s.pendingMeal.src === 'photo' ? 'Depuis une photo · ' + s.pendingMeal.desc : s.pendingMeal && s.pendingMeal.src === 'recent' ? 'Repas fréquent · ' + s.pendingMeal.desc : s.pendingMeal && s.pendingMeal.src === 'barcode' ? 'Produit scanné · ' + s.pendingMeal.desc : 'Depuis la voix · sandwich poulet',
+      validateSrcLabel: s.pendingMeal && s.pendingMeal.src === 'photo' ? 'Depuis une photo · ' + s.pendingMeal.desc : s.pendingMeal && s.pendingMeal.src === 'recent' ? 'Repas fréquent · ' + s.pendingMeal.desc : s.pendingMeal && s.pendingMeal.src === 'barcode' ? 'Produit scanné · ' + s.pendingMeal.desc : 'Depuis la voix · ' + ((s.pendingMeal && s.pendingMeal.desc) || 'ton repas'),
       isBarcode: s.screen === 'barcode', goBarcode: self.goBarcode(),
       barcodeInput: s.barcodeInput, onBarcodeInputChange: self.onBarcodeInputChange(), searchBarcode: self.searchBarcode(), backToScan: self.backToScan(), confirmBarcode: self.confirmBarcode(),
       barcodeScanStage: s.barcodeStage === 'scan', barcodeLoadingStage: s.barcodeStage === 'loading', barcodeErrorStage: s.barcodeStage === 'error', barcodeResultStage: s.barcodeStage === 'result',
@@ -1052,23 +1077,7 @@ function AppView({ V }) {
             <div style={css('text-align:center')}><div style={css('font:var(--fw-bold) 14px var(--font-body);color:var(--ink);white-space:nowrap')}>Nouveau repas</div><div style={css('margin-top:3px;display:flex;gap:4px;justify-content:center')}><span style={css('width:6px;height:6px;border-radius:50%;background:var(--coral-500)')}></span><span style={css('width:6px;height:6px;border-radius:50%;background:var(--sand-400)')}></span><span style={css('width:6px;height:6px;border-radius:50%;background:var(--sand-400)')}></span></div></div>
             <div onClick={V.goJournal} style={css('width:46px;height:46px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--taupe-600)')}><i className="ph ph-x" style={{ fontSize: 19 }}></i></div>
           </div>
-          {V.captureVoice && (
-          <div style={css('flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:0 20px')}>
-            <div style={css('font:var(--fw-regular) 12.5px/1.4 var(--font-body);color:var(--taupe-600);text-align:center')}>Parle, ou choisis une autre méthode — l'IA identifie les ingrédients</div>
-            <div style={css('width:120px;height:120px;border-radius:50%;background:radial-gradient(circle at 50% 40%,var(--coral-200),var(--coral-400));display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 10px rgba(216,104,22,.10),0 0 0 22px rgba(216,104,22,.05)')}>
-              <div style={css('display:flex;gap:4px;align-items:center;height:42px')}>
-                <div style={css('width:4px;height:16px;border-radius:2px;background:#fff')}></div><div style={css('width:4px;height:32px;border-radius:2px;background:#fff')}></div><div style={css('width:4px;height:42px;border-radius:2px;background:#fff')}></div><div style={css('width:4px;height:24px;border-radius:2px;background:#fff')}></div><div style={css('width:4px;height:36px;border-radius:2px;background:#fff')}></div><div style={css('width:4px;height:14px;border-radius:2px;background:#fff')}></div>
-              </div>
-            </div>
-            <div style={css('background:#fff;border-radius:var(--radius-md);padding:12px 14px;box-shadow:var(--shadow-sm);font:var(--fw-regular) 13px/1.4 var(--font-body);color:var(--cocoa-800);text-align:center')}>« un sandwich au poulet avec de la mayo et de la salade »</div>
-            <div style={css('display:flex;flex-wrap:wrap;gap:7px;justify-content:center')}>
-              <span style={css('background:var(--coral-50);border-radius:var(--radius-pill);padding:7px 13px;font:var(--fw-bold) 12px var(--font-body);color:var(--coral-600)')}>Pain</span>
-              <span style={css('background:var(--coral-50);border-radius:var(--radius-pill);padding:7px 13px;font:var(--fw-bold) 12px var(--font-body);color:var(--coral-600)')}>Poulet</span>
-              <span style={css('background:var(--coral-50);border-radius:var(--radius-pill);padding:7px 13px;font:var(--fw-bold) 12px var(--font-body);color:var(--coral-600)')}>Mayonnaise</span>
-              <span style={css('background:var(--coral-50);border-radius:var(--radius-pill);padding:7px 13px;font:var(--fw-bold) 12px var(--font-body);color:var(--coral-600)')}>Salade</span>
-            </div>
-          </div>
-          )}
+          {V.captureVoice && <VoiceCapture onResult={V.onVoiceResult} />}
 
           {V.captureRecents && (
           <div style={css('flex:1;overflow-y:auto;padding:6px 20px 0')} className="ob-scroll">
@@ -1120,11 +1129,7 @@ function AppView({ V }) {
           <div style={css('flex:1;overflow-y:auto;padding:14px 20px 20px')} className="ob-scroll">
             <div style={css('font:var(--fw-bold) 18px/1.2 var(--font-display);color:var(--ink)')}>Vise un code-barres</div>
             <div style={css('font:var(--fw-regular) 12px/1.5 var(--font-body);color:var(--taupe-600);margin-top:6px')}>Pour un produit industriel (biscuits, plats préparés, sauces…) — Obélix lit la liste d'ingrédients et les allergènes déclarés via Open Food Facts.</div>
-            <div style={css('margin-top:14px;height:150px;border-radius:var(--radius-lg);background:var(--cocoa-800);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;position:relative;overflow:hidden')}>
-              <i className="ph ph-barcode" style={{ fontSize: 40, color: 'rgba(255,255,255,.85)' }}></i>
-              <div style={css('font:600 11px var(--font-body);color:rgba(255,255,255,.7)')}>Caméra — vise le code-barres</div>
-              <div style={css('position:absolute;left:10%;right:10%;top:50%;height:2px;background:var(--coral-500);box-shadow:0 0 8px var(--coral-500)')}></div>
-            </div>
+            <CameraScanner onDetected={V.onBarcodeDetected} />
             <div style={css('margin-top:14px;display:flex;gap:8px')}>
               <input type="text" value={V.barcodeInput} onChange={V.onBarcodeInputChange} placeholder="Ou saisis les 13 chiffres" style={css('flex:1;border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:12px 13px;font:500 13px var(--font-mono);color:var(--ink);background:#fff')} />
               <div onClick={V.searchBarcode} style={css('background:var(--coral-500);color:#fff;border-radius:var(--radius-sm);padding:0 18px;display:flex;align-items:center;justify-content:center;font:var(--fw-bold) 12.5px var(--font-body);cursor:pointer')}>OK</div>

@@ -47,3 +47,25 @@ a:hover {
     transform: rotate(360deg);
   }
 }
+
+@keyframes obscan {
+  0% {
+    top: 30%;
+  }
+  50% {
+    top: 68%;
+  }
+  100% {
+    top: 30%;
+  }
+}
+
+@keyframes obwave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1.15);
+  }
+}
