@@ -31,6 +31,40 @@ function clean(s) {
   return (s || '').replace(/\s+/g, ' ').trim();
 }
 
+// Supprime les répétitions IMMÉDIATES de séquences de mots. C'est le symptôme
+// classique de la reconnaissance vocale sur Chrome/Android, qui ré-émet la même
+// phrase (« une pomme une pomme une pomme »). On garde une occurrence.
+function collapseRepeats(s) {
+  const w = clean(s).split(' ').filter(Boolean);
+  if (w.length < 2) return clean(s);
+  const lc = w.map((x) => x.toLowerCase());
+  const out = [];
+  let i = 0;
+  while (i < w.length) {
+    let matched = false;
+    const maxN = Math.min(8, Math.floor((w.length - i) / 2));
+    for (let n = maxN; n >= 1; n--) {
+      let dup = true;
+      for (let k = 0; k < n; k++) { if (lc[i + k] !== lc[i + n + k]) { dup = false; break; } }
+      if (dup) {
+        for (let k = 0; k < n; k++) out.push(w[i + k]);
+        let j = i + n;
+        while (j + n <= w.length) {
+          let same = true;
+          for (let k = 0; k < n; k++) { if (lc[j + k] !== lc[i + k]) { same = false; break; } }
+          if (!same) break;
+          j += n;
+        }
+        i = j;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) { out.push(w[i]); i++; }
+  }
+  return out.join(' ');
+}
+
 // Reconnaissance vocale réelle (Web Speech API, fr-FR). Le texte reconnu est
 // analysé contre la base d'aliments Obélix pour en extraire les ingrédients.
 //
@@ -75,28 +109,44 @@ export default function VoiceCapture({ onResult }) {
     const rec = new SR();
     rec.lang = 'fr-FR';
     rec.interimResults = true;
-    rec.continuous = true;
+    // continuous=false : une prise de parole par appui, terminée proprement au
+    // silence. C'est le réglage le plus fiable — le mode continu est la source
+    // des phrases dupliquées sur Chrome/Android. On ré-appuie pour compléter.
+    rec.continuous = false;
+    rec.maxAlternatives = 1;
 
     rec.onresult = (e) => {
-      // Reconstruit tout depuis le début de la session → aucune duplication.
-      let fin = '';
+      const finals = [];
       let interim = '';
       for (let i = 0; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
-        if (e.results[i].isFinal) fin += t + ' ';
-        else interim += t;
+        const r = e.results[i];
+        const t = clean(r[0].transcript);
+        if (!t) continue;
+        if (r.isFinal) {
+          // Ignore un segment final identique au précédent (bug Android).
+          if (!finals.length || finals[finals.length - 1].toLowerCase() !== t.toLowerCase()) finals.push(t);
+        } else {
+          interim = r[0].transcript; // seul le dernier interim compte
+        }
       }
-      sessionRef.current = clean(fin);
+      const fin = collapseRepeats(finals.join(' '));
+      sessionRef.current = fin;
       const base = committedRef.current;
-      setTranscript(clean(base + ' ' + fin + ' ' + interim));
+      setTranscript(collapseRepeats(clean(base + ' ' + fin + ' ' + interim)));
     };
     rec.onerror = () => {};
     rec.onend = () => {
-      // Fige la session dans le texte cumulé — un nouveau « parler » s'y ajoute.
-      const merged = clean(committedRef.current + ' ' + sessionRef.current);
-      committedRef.current = merged;
+      const chunk = sessionRef.current;
       sessionRef.current = '';
       setListening(false);
+      const base = committedRef.current;
+      // Garde-fou : ne recolle pas un morceau déjà présent en fin de buffer.
+      const merged = !chunk
+        ? base
+        : base && base.toLowerCase().endsWith(chunk.toLowerCase())
+        ? base
+        : collapseRepeats(clean(base + ' ' + chunk));
+      committedRef.current = merged;
       setTranscript(merged);
       emit(merged);
     };
