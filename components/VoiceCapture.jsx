@@ -77,6 +77,7 @@ export default function VoiceCapture({ onResult }) {
   const recRef = useRef(null);
   const committedRef = useRef(''); // texte des sessions terminées + éditions manuelles
   const sessionRef = useRef(''); // texte final de la session d'écoute en cours
+  const manualStopRef = useRef(false); // vrai uniquement quand l'utilisateur arrête lui-même
   const [supported, setSupported] = useState(true);
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState('');
@@ -109,10 +110,12 @@ export default function VoiceCapture({ onResult }) {
     const rec = new SR();
     rec.lang = 'fr-FR';
     rec.interimResults = true;
-    // continuous=false : une prise de parole par appui, terminée proprement au
-    // silence. C'est le réglage le plus fiable — le mode continu est la source
-    // des phrases dupliquées sur Chrome/Android. On ré-appuie pour compléter.
-    rec.continuous = false;
+    // continuous=true : l'écoute reste active malgré les silences. Les navigateurs
+    // (surtout Android) coupent quand même à chaque silence → on RELANCE tout seul
+    // dans onend tant que l'utilisateur n'a pas appuyé pour arrêter. Marche
+    // « démarrer / arrêter » entièrement manuelle. La duplication éventuelle du
+    // mode continu est neutralisée par la dédup de segments + collapseRepeats.
+    rec.continuous = true;
     rec.maxAlternatives = 1;
 
     rec.onresult = (e) => {
@@ -134,11 +137,17 @@ export default function VoiceCapture({ onResult }) {
       const base = committedRef.current;
       setTranscript(collapseRepeats(clean(base + ' ' + fin + ' ' + interim)));
     };
-    rec.onerror = () => {};
+    rec.onerror = (e) => {
+      // Erreurs bloquantes → on n'essaie pas de relancer en boucle.
+      const err = e && e.error;
+      if (err === 'not-allowed' || err === 'service-not-allowed' || err === 'audio-capture') {
+        manualStopRef.current = true;
+        setListening(false);
+      }
+    };
     rec.onend = () => {
       const chunk = sessionRef.current;
       sessionRef.current = '';
-      setListening(false);
       const base = committedRef.current;
       // Garde-fou : ne recolle pas un morceau déjà présent en fin de buffer.
       const merged = !chunk
@@ -149,10 +158,24 @@ export default function VoiceCapture({ onResult }) {
       committedRef.current = merged;
       setTranscript(merged);
       emit(merged);
+      if (manualStopRef.current) {
+        setListening(false);
+      } else {
+        // Silence détecté par le navigateur mais l'utilisateur n'a pas arrêté :
+        // on relance pour continuer à écouter.
+        try {
+          rec.start();
+        } catch (e2) {
+          setTimeout(() => {
+            try { rec.start(); } catch (e3) { setListening(false); }
+          }, 200);
+        }
+      }
     };
     recRef.current = rec;
     return () => {
       try {
+        manualStopRef.current = true;
         rec.onend = null;
         rec.abort();
       } catch (e) {}
@@ -163,6 +186,7 @@ export default function VoiceCapture({ onResult }) {
   function start() {
     const rec = recRef.current;
     if (!rec) return;
+    manualStopRef.current = false;
     sessionRef.current = '';
     try {
       rec.start();
@@ -174,6 +198,8 @@ export default function VoiceCapture({ onResult }) {
   function stop() {
     const rec = recRef.current;
     if (!rec) return;
+    manualStopRef.current = true; // empêche la relance automatique
+    setListening(false);
     try {
       rec.stop();
     } catch (e) {}
@@ -222,7 +248,7 @@ export default function VoiceCapture({ onResult }) {
         }}
       >
         {supported
-          ? 'Parle pour décrire ton repas — tu peux re-parler pour compléter, ou corriger le texte à la main.'
+          ? "Appuie pour démarrer. L'écoute continue malgré les silences — appuie une 2ᵉ fois pour arrêter. Texte corrigeable à la main."
           : "Reconnaissance vocale indisponible sur ce navigateur — voici un exemple. Tu peux corriger à l'étape suivante."}
       </div>
 
@@ -259,7 +285,7 @@ export default function VoiceCapture({ onResult }) {
             color: listening ? 'var(--coral-600)' : 'var(--taupe-600)',
           }}
         >
-          {listening ? 'À l\'écoute — touche pour mettre en pause' : hasText ? 'Touche pour ajouter à ta description' : 'Touche pour parler'}
+          {listening ? '● Enregistrement… touche pour arrêter' : hasText ? 'Touche pour reprendre / compléter' : 'Touche pour parler'}
         </div>
       )}
 

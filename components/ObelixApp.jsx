@@ -36,6 +36,11 @@ const MEAL_TYPES = ['Petit-déjeuner', 'Déjeuner', 'Goûter', 'Dîner', 'Encas'
 // d'eux ramène au Journal (écran d'accueil) plutôt que de fermer l'app.
 const NAV_TABS = ['cycle', 'analyse', 'profil', 'now'];
 
+// Seuil (%) en dessous duquel un ingrédient d'un produit scanné est considéré
+// comme présent en quantité infime (ex. traces de moutarde) et n'est pas remonté.
+// Les allergènes déclarés gluten/lactose restent ajoutés quelle que soit la quantité.
+const TRACE_PCT = 2;
+
 const INITIAL = {
   screen: 'onboarding',
   obStep: 0,
@@ -220,7 +225,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       return function () {
         const r = self.state.recents[i];
         const names = r.desc.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-        self.setState(Object.assign({ ings: self._ingsFrom(names), pendingMeal: { name: r.name, desc: r.desc, icon: r.icon, src: 'recent' }, screen: 'validate' }, self._clockDefaults()));
+        self._enterValidate(names, [], { name: r.name, desc: r.desc, icon: r.icon, src: 'recent' });
       };
     };
     self.toggleRecentsTab = function () { return function () { self.setState(function (st) { return { captureTab: st.captureTab === 'recents' ? 'voice' : 'recents' }; }); }; };
@@ -233,9 +238,31 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         { barcode: '5449000000996', name: 'Coca-Cola', brand: 'Coca-Cola', ingredients: 'Eau gazéifiée, sucre, colorant caramel E150d, acidifiant E338, arômes, caféine', allergens: [] },
       ];
     };
+    self._cleanIngName = function (s) {
+      return (s || '').replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').replace(/\d+([.,]\d+)?\s*%?/g, '').replace(/\s+/g, ' ').trim();
+    };
     self._parseIngredients = function (text) {
       if (!text) return [];
-      return text.split(/[,;]/).map(function (s) { return s.replace(/\([^)]*\)/g, '').replace(/\[[^\]]*\]/g, '').replace(/\d+\s*%?/g, '').trim(); }).filter(function (s) { return s.length > 1; }).slice(0, 14);
+      return text.split(/[,;]/).map(function (s) { return self._cleanIngName(s); }).filter(function (s) { return s.length > 1; }).slice(0, 14);
+    };
+    // Liste d'ingrédients d'un produit scanné, en écartant les quantités infimes.
+    // Utilise la structure Open Food Facts (percent_estimate) quand elle existe ;
+    // sinon repli sur le texte brut.
+    self._productIngredients = function (p) {
+      const arr = p && p.structured;
+      if (Array.isArray(arr) && arr.length) {
+        const kept = [];
+        arr.forEach(function (ing) {
+          const name = self._cleanIngName(ing.text || (ing.id || '').replace(/^[a-z]{2}:/, '').replace(/-/g, ' '));
+          if (!name || name.length < 2) return;
+          const pct = typeof ing.percent_estimate === 'number' ? ing.percent_estimate
+            : typeof ing.percent === 'number' ? ing.percent : null;
+          if (pct != null && pct < TRACE_PCT) return; // quantité infime → ignoré
+          if (kept.indexOf(name) < 0) kept.push(name);
+        });
+        if (kept.length) return kept.slice(0, 16);
+      }
+      return self._parseIngredients(p.ingredients);
     };
     self.goBarcode = function () { return function () { self.setState({ screen: 'barcode', barcodeStage: 'scan', barcodeInput: '', barcodeProduct: null }); }; };
     self.onBarcodeInputChange = function () { return function (e) { self.setState({ barcodeInput: e.target.value }); }; };
@@ -251,7 +278,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       const demo = self._offDemo().find(function (p) { return p.barcode === code; });
       if (demo) { self.setState({ barcodeStage: 'result', barcodeProduct: demo, barcodeSource: 'demo' }); return; }
       self.setState({ barcodeStage: 'loading' });
-      const url = 'https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(code) + '.json?fields=product_name,brands,ingredients_text_fr,ingredients_text,allergens_tags';
+      const url = 'https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(code) + '.json?fields=product_name,brands,ingredients_text_fr,ingredients_text,ingredients,allergens_tags';
       const timeout = new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 7000); });
       Promise.race([fetch(url).then(function (r) { return r.json(); }), timeout]).then(function (data) {
         if (!data || !data.product || (data.status === 0)) { self.setState({ barcodeStage: 'error' }); return; }
@@ -261,6 +288,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
           barcodeProduct: {
             barcode: code, name: p.product_name || 'Produit', brand: p.brands || '',
             ingredients: p.ingredients_text_fr || p.ingredients_text || '',
+            structured: Array.isArray(p.ingredients) ? p.ingredients : [],
             allergens: p.allergens_tags || [],
           },
         });
@@ -269,15 +297,22 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
     self.confirmBarcode = function () {
       return function () {
         const p = self.state.barcodeProduct; if (!p) return;
-        const names = self._parseIngredients(p.ingredients);
-        const ings = self._ingsFrom(names.length ? names : [p.name]);
+        // Chaque ingrédient (hors quantités infimes) devient un ingrédient individuel
+        // ajouté à la liste. Le scan ne crée PAS de repas → l'utilisateur peut
+        // continuer à en ajouter, puis valider quand il a terminé.
+        const names = self._productIngredients(p);
+        const list = names.length ? names : [p.name];
+        const extra = [];
         (p.allergens || []).forEach(function (tag) {
           const cid = tag === 'en:gluten' ? 'gluten' : tag === 'en:milk' ? 'lactose' : null;
-          if (cid && !ings.some(function (x) { return x.tags.some(function (t) { return t.l === cid; }); })) {
-            ings.push({ name: (cid === 'gluten' ? 'Gluten' : 'Lactose') + ' (allergène déclaré)', tags: [{ l: cid }], checked: true });
-          }
+          if (!cid) return;
+          // Gluten/lactose déclarés : toujours ajoutés (même en petite quantité,
+          // ils comptent pour une intolérance) s'ils ne sont pas déjà couverts.
+          const covered = list.some(function (n) { return self._tagsOf(n).some(function (t) { return t.l === cid; }); })
+            || (self.state.ings || []).some(function (x) { return (x.tags || []).some(function (t) { return t.l === cid; }); });
+          if (!covered) extra.push({ name: (cid === 'gluten' ? 'Gluten' : 'Lactose') + ' (allergène déclaré)', tags: [{ l: cid }], checked: true });
         });
-        self.setState(Object.assign({ ings: ings, pendingMeal: { name: p.name, desc: p.brand || p.name, icon: 'ph-barcode', src: 'barcode' }, screen: 'validate' }, self._clockDefaults()));
+        self._enterValidate(list, extra, { name: p.name, desc: p.brand || p.name, icon: 'ph-barcode', src: 'barcode' });
       };
     };
     self.openMeal = function (i) { return function () { self.setState({ mealDetail: i, screen: 'mealDetail' }); }; };
@@ -345,7 +380,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         const timeDec = (parseInt(tp[0], 10) || 12) + (parseInt(tp[1], 10) || 0) / 60;
         const desc = foods.length ? foods.join(', ') : (pm.desc || type);
         const meal = { name: type, desc: desc, time: timeDec, timeLabel: timeLabel, icon: self._iconForType(type), compounds: comps, foods: foods };
-        self.setState({ meals: st.meals.concat([meal]), mealLogged: true, screen: 'prevision' });
+        self.setState({ meals: st.meals.concat([meal]), mealLogged: true, screen: 'prevision', ings: [], voice: null });
         if (comps.length) { const risk = comps[0], W = st.windows[risk] || 6; setTimeout(function () { self.firePush({ icon: 'ph-timer', color: 'watch', title: 'Fenêtre à risque · ' + risk, text: type + ' — je surveille jusque ~+' + W + 'h. Une gêne maintenant lui serait attribuée.', action: 'now' }); }, 1500); }
       };
     };
@@ -371,35 +406,48 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
     self._db = function () { return OBELIX_FOODS || null; };
     self._tagsOf = function (name) { const db = self._db(); return db ? db.tags(name).map(function (c) { return { l: c.id }; }) : []; };
     self._ingsFrom = function (names) { return names.map(function (n) { return { name: n, tags: self._tagsOf(n), checked: true }; }); };
-    self._voiceIngs = function () { return self._ingsFrom(['Pain', 'Poulet', 'Mayonnaise', 'Salade verte']); };
-    self._extras = function () { return ['Huile d\'olive', 'Beurre', 'Sauce soja', 'Sucre']; };
+    // Fusionne de nouveaux aliments dans la liste en cours (sans doublon), en
+    // conservant ce que l'utilisateur avait déjà. C'est le cœur du « constructeur
+    // de repas » : chaque scan/voix/photo AJOUTE des ingrédients, sans créer de repas.
+    self._mergeIngs = function (existing, names, extraRows) {
+      const out = (existing || []).slice();
+      const has = function (nm) { return out.some(function (x) { return x.name.toLowerCase() === nm.toLowerCase(); }); };
+      (names || []).forEach(function (n) {
+        const nm = (n || '').trim();
+        if (!nm || has(nm)) return;
+        const pretty = nm.charAt(0).toUpperCase() + nm.slice(1);
+        out.push({ name: pretty, tags: self._tagsOf(pretty), checked: true });
+      });
+      (extraRows || []).forEach(function (row) { if (row && row.name && !has(row.name)) out.push(row); });
+      return out;
+    };
+    // Ajoute des aliments à la liste puis affiche l'écran de validation SANS créer
+    // de repas. L'heure/type ne sont initialisés que pour un repas neuf (liste vide).
+    self._enterValidate = function (names, extraRows, srcMeal) {
+      const st = self.state;
+      const fresh = !st.ings || st.ings.length === 0;
+      const merged = self._mergeIngs(st.ings || [], names, extraRows);
+      const patch = { ings: merged, pendingMeal: srcMeal, screen: 'validate', newIng: '' };
+      if (fresh) Object.assign(patch, self._clockDefaults());
+      self.setState(patch);
+    };
+    // Démarre un NOUVEAU repas (vide la liste de travail) depuis le Journal.
+    self.goNewMeal = function () { return function () { self.setState({ ings: [], voice: null, screen: 'capture', captureTab: 'voice' }); }; };
     self._toast = function (msg) { self.setState({ toast: msg }); clearTimeout(self._tt); self._tt = setTimeout(function () { self.setState({ toast: null }); }, 2600); };
     self.goPhoto = function () { return function () { self.setState({ screen: 'photo', photoStage: 'pick' }); }; };
-    // Résultat OCR photo → écran de validation (aliments réels lus sur l'image).
+    // Résultat OCR photo → AJOUTE les aliments lus à la liste (sans créer de repas).
     self.onPhotoConfirm = function (res) {
       const names = (res && res.foods) || [];
-      const ings = names.length ? self._ingsFrom(names) : [];
-      self.setState(Object.assign({
-        ings: ings,
-        pendingMeal: { name: 'Repas', desc: (res && res.title) || 'Repas photographié', icon: 'ph-image-square', src: 'photo' },
-        screen: 'validate',
-      }, self._clockDefaults()));
+      self._enterValidate(names, [], { name: 'Repas', desc: (res && res.title) || 'Repas photographié', icon: 'ph-image-square', src: 'photo' });
     };
     self.goValidateVoice = function () {
       return function () {
         const v = self.state.voice;
-        let ings, desc;
-        if (v && v.foodNames && v.foodNames.length) {
-          ings = self._ingsFrom(v.foodNames);
-          desc = v.foodNames.join(', ');
-        } else if (v && v.transcript) {
-          ings = [{ name: v.transcript.charAt(0).toUpperCase() + v.transcript.slice(1), tags: [], checked: true }];
-          desc = v.transcript;
-        } else {
-          ings = self._voiceIngs();
-          desc = 'Sandwich poulet, salade';
-        }
-        self.setState(Object.assign({ ings: ings, pendingMeal: { name: 'Déjeuner', desc: desc, icon: 'ph-hamburger', src: 'voice' }, screen: 'validate' }, self._clockDefaults()));
+        let names, desc;
+        if (v && v.foodNames && v.foodNames.length) { names = v.foodNames; desc = v.foodNames.join(', '); }
+        else if (v && v.transcript) { names = [v.transcript.charAt(0).toUpperCase() + v.transcript.slice(1)]; desc = v.transcript; }
+        else { names = []; desc = 'ton repas'; }
+        self._enterValidate(names, [], { name: 'Repas', desc: desc, icon: 'ph-microphone', src: 'voice' });
       };
     };
     // Type de repas + heure déduits de l'horloge réelle à l'ouverture de la validation.
@@ -1062,7 +1110,7 @@ function renderValsFactory(self) {
       isPrevision: s.screen === 'prevision', isDouleur: s.screen === 'douleur', isNow: s.screen === 'now', isAnalyse: s.screen === 'analyse',
       showNav: ['journal', 'now', 'analyse', 'cycle'].indexOf(s.screen) >= 0,
       navLeft, navRight,
-      goJournal: self.go('journal'), goCapture: self.go('capture'), goValidate: self.go('validate'), goValidateBack: self.goValidateBack(),
+      goJournal: self.go('journal'), goCapture: self.go('capture'), goNewMeal: self.goNewMeal(), goValidate: self.go('validate'), goValidateBack: self.goValidateBack(),
       goPrevision: self.go('prevision'), goDouleur: self.go('douleur'), goNow: self.go('now'), goAnalyse: self.go('analyse'),
       ings, checkedLabel: 'Valider ce repas (' + checkedCount + ')',
       portionPetiteStyle: portionStyle('petite'), portionNormaleStyle: portionStyle('normale'), portionGrandeStyle: portionStyle('grande'),
@@ -1288,7 +1336,7 @@ function AppView({ V }) {
               </div>
             ))}
             {V.isToday && (
-              <div onClick={V.goCapture} style={css('display:flex;align-items:center;justify-content:center;gap:8px;border:1.5px dashed var(--border-strong);border-radius:var(--radius-md);padding:16px;color:var(--taupe-600);cursor:pointer')}>
+              <div onClick={V.goNewMeal} style={css('display:flex;align-items:center;justify-content:center;gap:8px;border:1.5px dashed var(--border-strong);border-radius:var(--radius-md);padding:16px;color:var(--taupe-600);cursor:pointer')}>
                 <i className="ph ph-plus" style={{ fontSize: 17 }}></i><div style={css('font:var(--fw-bold) 12.5px var(--font-body)')}>Ajouter un repas</div>
               </div>
             )}
@@ -1454,6 +1502,7 @@ function AppView({ V }) {
               />
               <div onClick={V.addIngFromInput} style={css('display:flex;align-items:center;gap:5px;background:var(--coral-500);color:#fff;border-radius:var(--radius-sm);padding:0 15px;font:var(--fw-bold) 12.5px var(--font-body);cursor:pointer;white-space:nowrap')}><i className="ph ph-plus" style={{ fontSize: 15 }}></i>Ajouter</div>
             </div>
+            <div onClick={V.goCapture} style={css('display:flex;align-items:center;justify-content:center;gap:8px;border:1.5px solid var(--coral-200);background:var(--coral-50);border-radius:var(--radius-sm);padding:11px 14px;color:var(--coral-600);margin-top:8px;cursor:pointer')}><i className="ph ph-plus-circle" style={{ fontSize: 16 }}></i><div style={css('font:var(--fw-bold) 12.5px var(--font-body)')}>Ajouter d'autres aliments (scan, voix, photo…)</div></div>
             {V.elimWarning && (
               <div style={css('margin-top:10px;display:flex;gap:9px;align-items:flex-start;background:var(--tol-watch-50);border-radius:var(--radius-sm);padding:11px 13px')}><i className="ph-fill ph-warning" style={{ fontSize: 15, color: 'var(--tol-watch-500)', flexShrink: 0, marginTop: 1 }}></i><div style={css('font:var(--fw-regular) 11px/1.45 var(--font-body);color:var(--tol-watch-700)')}><strong>{V.elimWarnIng}</strong> contient du gluten — tu es en plein test d'éviction (J2/7). Décoche-le ou le test sera faussé.</div></div>
             )}
@@ -2115,7 +2164,7 @@ function AppView({ V }) {
         {V.showNav && (
         <div style={css('position:absolute;left:0;right:0;bottom:0;height:64px;display:flex;align-items:center;padding:0 14px;background:#fff;border-top:1px solid var(--border-soft)')}>
           <div style={css('flex:1;display:flex;justify-content:space-around')}>{V.navLeft.map((it, i) => (<div key={i} onClick={it.onTap} style={css('display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;min-width:48px')}><i className={it.iconCls} style={{ fontSize: 22, color: it.color }}></i><div style={css('font:var(--fw-bold) 10px var(--font-body);color:' + it.color)}>{it.label}</div></div>))}</div>
-          <div onClick={V.goCapture} style={css('width:52px;height:52px;border-radius:50%;background:var(--coral-500);box-shadow:var(--shadow-brand);display:flex;align-items:center;justify-content:center;margin-top:-22px;cursor:pointer;flex-shrink:0')}><i className="ph ph-plus" style={{ fontSize: 26, color: '#fff' }}></i></div>
+          <div onClick={V.goNewMeal} style={css('width:52px;height:52px;border-radius:50%;background:var(--coral-500);box-shadow:var(--shadow-brand);display:flex;align-items:center;justify-content:center;margin-top:-22px;cursor:pointer;flex-shrink:0')}><i className="ph ph-plus" style={{ fontSize: 26, color: '#fff' }}></i></div>
           <div style={css('flex:1;display:flex;justify-content:space-around')}>{V.navRight.map((it, i) => (<div key={i} onClick={it.onTap} style={css('display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;min-width:48px')}><i className={it.iconCls} style={{ fontSize: 22, color: it.color }}></i><div style={css('font:var(--fw-bold) 10px var(--font-body);color:' + it.color)}>{it.label}</div></div>))}</div>
         </div>
         )}
