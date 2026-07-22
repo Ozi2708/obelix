@@ -71,6 +71,8 @@ const INITIAL = {
   dayOffset: 0,
   history: [],
   recents: [],
+  // Mémoire des produits scannés : réutilisés quand on retape/redit leur nom.
+  products: [],
   recentToast: null,
   voice: null,
   dayCheck: 'open',
@@ -264,6 +266,32 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       }
       return self._parseIngredients(p.ingredients);
     };
+    // --- Mémoire des produits scannés (réutilisation par nom) ---
+    self._norm = function (s) {
+      return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    };
+    // Mots « significatifs » d'un nom de produit (≥4 lettres, hors mots vides),
+    // qui serviront de déclencheurs quand l'utilisateur les retape/redit.
+    self._STOP = { avec: 1, sans: 1, pour: 1, bio: 1, nature: 1, light: 1, allege: 1, allegee: 1, demi: 1, ecreme: 1, entier: 1, frais: 1, fraiche: 1, pack: 1, format: 1, grand: 1, petit: 1 };
+    self._productWords = function (name) {
+      return self._norm(name).split(' ').filter(function (w) { return w.length >= 4 && !self._STOP[w]; });
+    };
+    self._saveScannedProduct = function (p, foods) {
+      if (!p || !foods || !foods.length) return;
+      const words = self._productWords(p.name);
+      if (!words.length) return;
+      const list = (self.state.products || []).filter(function (x) { return x.barcode !== p.barcode && (x.name || '').toLowerCase() !== (p.name || '').toLowerCase(); });
+      list.unshift({ barcode: p.barcode || '', name: p.name, brand: p.brand || '', foods: foods.slice(), words: words, ts: Date.now() });
+      self.setState({ products: list.slice(0, 60) });
+    };
+    // Produits scannés dont un mot-clé apparaît dans le texte (le plus récent d'abord).
+    self._matchProducts = function (text) {
+      const wset = {};
+      self._norm(text).split(' ').forEach(function (w) { if (w) wset[w] = 1; });
+      return (self.state.products || [])
+        .filter(function (p) { return (p.words || []).some(function (w) { return wset[w]; }); })
+        .sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); });
+    };
     self.goBarcode = function () { return function () { self.setState({ screen: 'barcode', barcodeStage: 'scan', barcodeInput: '', barcodeProduct: null }); }; };
     self.onBarcodeInputChange = function () { return function (e) { self.setState({ barcodeInput: e.target.value }); }; };
     self.fillBarcodeDemo = function (code) { return function () { self.setState({ barcodeInput: code }); self._runBarcodeSearch(code); }; };
@@ -312,6 +340,9 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
             || (self.state.ings || []).some(function (x) { return (x.tags || []).some(function (t) { return t.l === cid; }); });
           if (!covered) extra.push({ name: (cid === 'gluten' ? 'Gluten' : 'Lactose') + ' (allergène déclaré)', tags: [{ l: cid }], checked: true });
         });
+        // Mémorise le produit pour le retrouver plus tard par son nom (sans re-scan).
+        const memoFoods = extra.reduce(function (acc, r) { return acc.concat([r.name]); }, list.slice());
+        self._saveScannedProduct(p, memoFoods);
         self._enterValidate(list, extra, { name: p.name, desc: p.brand || p.name, icon: 'ph-barcode', src: 'barcode' });
       };
     };
@@ -365,22 +396,35 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
     self.logMeal = function () {
       return function () {
         const st = self.state;
-        if (st.mealLogged) { self.setState({ screen: 'prevision' }); return; }
         const comps = [];
         const foods = [];
-        st.ings.forEach(function (x) {
+        (st.ings || []).forEach(function (x) {
           if (!x.checked) return;
           if (foods.indexOf(x.name) < 0) foods.push(x.name);
           x.tags.forEach(function (t) { if (st.windows[t.l] && comps.indexOf(t.l) < 0) comps.push(t.l); });
         });
+        // Rien de coché → on n'enregistre pas de repas vide (gère aussi le double-tap
+        // puisque la liste est vidée après enregistrement).
+        if (!foods.length) { self.setState({ screen: 'prevision' }); return; }
         const pm = st.pendingMeal || { desc: '', icon: 'ph-bowl-food' };
         const type = st.mealType || 'Repas';
         const timeLabel = st.mealTime || '12:40';
         const tp = timeLabel.split(':');
         const timeDec = (parseInt(tp[0], 10) || 12) + (parseInt(tp[1], 10) || 0) / 60;
-        const desc = foods.length ? foods.join(', ') : (pm.desc || type);
-        const meal = { name: type, desc: desc, time: timeDec, timeLabel: timeLabel, icon: self._iconForType(type), compounds: comps, foods: foods };
-        self.setState({ meals: st.meals.concat([meal]), mealLogged: true, screen: 'prevision', ings: [], voice: null });
+        const desc = foods.join(', ');
+        const icon = self._iconForType(type);
+        const meal = { name: type, desc: desc, time: timeDec, timeLabel: timeLabel, icon: icon, compounds: comps, foods: foods };
+        // Met à jour les « repas récents » : incrémente si déjà présent, sinon ajoute en tête.
+        const recents = (st.recents || []).slice();
+        const ri = recents.findIndex(function (r) { return (r.desc || '').toLowerCase() === desc.toLowerCase(); });
+        if (ri >= 0) {
+          recents[ri] = Object.assign({}, recents[ri], { count: (recents[ri].count || 1) + 1 });
+          const moved = recents.splice(ri, 1)[0];
+          recents.unshift(moved);
+        } else {
+          recents.unshift({ name: type, desc: desc, icon: icon, count: 1 });
+        }
+        self.setState({ meals: (st.meals || []).concat([meal]), mealLogged: true, screen: 'prevision', ings: [], voice: null, recents: recents.slice(0, 10) });
         if (comps.length) { const risk = comps[0], W = st.windows[risk] || 6; setTimeout(function () { self.firePush({ icon: 'ph-timer', color: 'watch', title: 'Fenêtre à risque · ' + risk, text: type + ' — je surveille jusque ~+' + W + 'h. Une gêne maintenant lui serait attribuée.', action: 'now' }); }, 1500); }
       };
     };
@@ -432,7 +476,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       self.setState(patch);
     };
     // Démarre un NOUVEAU repas (vide la liste de travail) depuis le Journal.
-    self.goNewMeal = function () { return function () { self.setState({ ings: [], voice: null, screen: 'capture', captureTab: 'voice' }); }; };
+    self.goNewMeal = function () { return function () { self.setState({ ings: [], voice: null, mealLogged: false, screen: 'capture', captureTab: 'voice' }); }; };
     self._toast = function (msg) { self.setState({ toast: msg }); clearTimeout(self._tt); self._tt = setTimeout(function () { self.setState({ toast: null }); }, 2600); };
     self.goPhoto = function () { return function () { self.setState({ screen: 'photo', photoStage: 'pick' }); }; };
     // Résultat OCR photo → AJOUTE les aliments lus à la liste (sans créer de repas).
@@ -444,9 +488,16 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       return function () {
         const v = self.state.voice;
         let names, desc;
-        if (v && v.foodNames && v.foodNames.length) { names = v.foodNames; desc = v.foodNames.join(', '); }
+        if (v && v.foodNames && v.foodNames.length) { names = v.foodNames.slice(); desc = v.foodNames.join(', '); }
         else if (v && v.transcript) { names = [v.transcript.charAt(0).toUpperCase() + v.transcript.slice(1)]; desc = v.transcript; }
         else { names = []; desc = 'ton repas'; }
+        // Produits déjà scannés mentionnés à voix → on développe leurs ingrédients.
+        const spoken = (v && v.transcript) || '';
+        const prods = self._matchProducts(spoken);
+        if (prods.length) {
+          prods.forEach(function (p) { names = names.concat(p.foods); });
+          self._toast(prods.length + ' produit' + (prods.length > 1 ? 's' : '') + ' déjà scanné' + (prods.length > 1 ? 's' : '') + ' reconnu' + (prods.length > 1 ? 's' : ''));
+        }
         self._enterValidate(names, [], { name: 'Repas', desc: desc, icon: 'ph-microphone', src: 'voice' });
       };
     };
@@ -477,6 +528,14 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       const st = self.state;
       const name = (st.newIng || '').trim();
       if (!name) return;
+      // Produit déjà scanné dont le nom correspond → on ajoute directement SES
+      // ingrédients (pas besoin de re-scanner).
+      const prod = self._matchProducts(name)[0];
+      if (prod) {
+        self.setState({ ings: self._mergeIngs(st.ings || [], prod.foods, []), newIng: '' });
+        self._toast('« ' + prod.name +' » déjà scanné — ingrédients ajoutés');
+        return;
+      }
       if (st.ings.some(function (x) { return x.name.toLowerCase() === name.toLowerCase(); })) {
         self._toast('« ' + name + ' » est déjà dans la liste');
         self.setState({ newIng: '' });
@@ -610,6 +669,7 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         // Compat : anciennes sauvegardes sans historique (ou avec stats/pastDays obsolètes).
         delete saved.stats; delete saved.pastDays; delete saved.demoDay1;
         if (!Array.isArray(saved.history)) saved.history = [];
+        if (!Array.isArray(saved.products)) saved.products = [];
         if (!Array.isArray(saved.meals)) saved.meals = INITIAL.meals;
         if (!saved.windows) saved.windows = INITIAL.windows;
         if (saved.screen !== 'onboarding') saved.screen = 'journal';
