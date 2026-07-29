@@ -41,6 +41,42 @@ const NAV_TABS = ['cycle', 'analyse', 'profil', 'now'];
 // Les allergènes déclarés gluten/lactose restent ajoutés quelle que soit la quantité.
 const TRACE_PCT = 2;
 
+// ===================== Dates réelles =====================
+// Toute la gestion du temps s'appuie sur l'horloge de l'appareil : la journée
+// courante, le changement de jour au relancement, l'heure des repas et des gênes.
+const MONTHS_FULL = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+const MONTHS_ABBR = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+const DAYS_FULL = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+const DAYS_ABBR = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
+
+// Clé stable d'une journée (YYYY-MM-DD), en heure locale.
+function dayKey(d) {
+  const x = d || new Date();
+  const m = x.getMonth() + 1, j = x.getDate();
+  return x.getFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (j < 10 ? '0' : '') + j;
+}
+function dateFromKey(k) {
+  const p = String(k || '').split('-');
+  if (p.length !== 3) return new Date();
+  return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+}
+// « jeudi 4 juillet »
+function dateLabelOf(d) { return DAYS_FULL[d.getDay()] + ' ' + d.getDate() + ' ' + MONTHS_FULL[d.getMonth()]; }
+// « jeu. 4 »
+function dayLabelOf(d) { return DAYS_ABBR[d.getDay()] + ' ' + d.getDate(); }
+// « mercredi 3 juil. »
+function dateShortOf(d) { return DAYS_FULL[d.getDay()] + ' ' + d.getDate() + ' ' + MONTHS_ABBR[d.getMonth()]; }
+// Heure décimale courante (14h30 → 14.5) et libellé « 14:30 ».
+function nowHours(d) { const x = d || new Date(); return x.getHours() + x.getMinutes() / 60; }
+function hLabel(h) {
+  const H = Math.floor(h), M = Math.round((h - H) * 60);
+  return (H < 10 ? '0' : '') + H + ':' + (M < 10 ? '0' : '') + M;
+}
+// Nombre de jours entre deux clés (peut être négatif).
+function daysBetween(k1, k2) {
+  return Math.round((dateFromKey(k2).getTime() - dateFromKey(k1).getTime()) / 86400000);
+}
+
 const INITIAL = {
   screen: 'onboarding',
   obStep: 0,
@@ -70,6 +106,10 @@ const INITIAL = {
   mealLogged: false,
   dayOffset: 0,
   history: [],
+  // Journée en cours + première utilisation (clés YYYY-MM-DD, horloge locale).
+  // `todayKey` sert à détecter le changement de jour au relancement de l'app.
+  todayKey: null,
+  startKey: null,
   recents: [],
   // Mémoire des produits scannés : réutilisés quand on retape/redit leur nom.
   products: [],
@@ -149,9 +189,11 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         return { ...prev, ...patch };
       });
 
-    self._h = function (h) { const H = Math.floor(h), M = Math.round((h - H) * 60); return (H < 10 ? '0' : '') + H + ':' + (M < 10 ? '0' : '') + M; };
+    self._h = hLabel;
     self._attrib = function (st) {
-      const evH = st.timing === 'now' ? 14.33 : st.timing === '1h' ? 13.5 : 11.5;
+      // Heure de la gêne, calée sur l'horloge réelle : maintenant, il y a 1h, ou ce matin.
+      const now = nowHours();
+      const evH = st.timing === 'now' ? now : st.timing === '1h' ? Math.max(0, now - 1) : Math.min(now, 9);
       const found = {};
       st.meals.forEach((m) => m.compounds.forEach((c) => {
         const w = st.windows[c] || 6;
@@ -408,9 +450,10 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         if (!foods.length) { self.setState({ screen: 'prevision' }); return; }
         const pm = st.pendingMeal || { desc: '', icon: 'ph-bowl-food' };
         const type = st.mealType || 'Repas';
-        const timeLabel = st.mealTime || '12:40';
-        const tp = timeLabel.split(':');
-        const timeDec = (parseInt(tp[0], 10) || 12) + (parseInt(tp[1], 10) || 0) / 60;
+        // Heure saisie ; si le champ est vide/incomplet on retombe sur l'heure réelle.
+        const tp = /^\d{1,2}:\d{2}$/.test(st.mealTime || '') ? st.mealTime.split(':') : null;
+        const timeDec = tp ? (parseInt(tp[0], 10) || 0) + (parseInt(tp[1], 10) || 0) / 60 : nowHours();
+        const timeLabel = hLabel(timeDec);
         const desc = foods.join(', ');
         const icon = self._iconForType(type);
         const meal = { name: type, desc: desc, time: timeDec, timeLabel: timeLabel, icon: icon, compounds: comps, foods: foods };
@@ -501,6 +544,48 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         self._enterValidate(names, [], { name: 'Repas', desc: desc, icon: 'ph-microphone', src: 'voice' });
       };
     };
+    // ===== Changement de jour =====
+    // Archive la journée écoulée dans l'historique et repart sur une journée
+    // vierge. Appelé au démarrage et chaque fois que l'app revient au premier plan
+    // (donc le jour change bien même si l'app reste ouverte la nuit).
+    self._rollDay = function (st) {
+      const today = dayKey();
+      const prevKey = st.todayKey;
+      if (!prevKey) return { todayKey: today, startKey: st.startKey || today };
+      if (prevKey === today) return null; // même journée : rien à faire
+      const d = dateFromKey(prevKey);
+      const hadContent = (st.meals && st.meals.length) || st.lastGene || st.dayCheck === 'ok';
+      const history = (st.history || []).slice();
+      if (hadContent) {
+        history.push({
+          key: prevKey,
+          dayLabel: dayLabelOf(d),
+          dateLabel: dateLabelOf(d),
+          phase: st.cyclePhase,
+          waterLevel: st.waterLevel || null,
+          meals: (st.meals || []).slice(),
+          genes: st.lastGene
+            ? [{ time: st.lastGene.timeNum != null ? st.lastGene.timeNum : 14, timeLabel: st.lastGene.time, intensity: st.lastGene.intensity, compounds: st.lastGene.compounds || [] }]
+            : [],
+          ok: st.dayCheck === 'ok',
+        });
+      }
+      return {
+        history: history,
+        todayKey: today,
+        startKey: st.startKey || prevKey,
+        // Nouvelle journée : tout ce qui est « du jour » repart à zéro.
+        meals: [], lastGene: null, dayCheck: 'open', waterLevel: null,
+        mealLogged: false, dayOffset: 0, ings: [], voice: null,
+        // Le cycle avance du nombre de jours écoulés.
+        currentDay: st.cycleTrackOn === false ? st.currentDay
+          : ((st.currentDay - 1 + Math.max(1, daysBetween(prevKey, today))) % (st.cycleLength || 28)) + 1,
+      };
+    };
+    self.checkDayRollover = function () {
+      const patch = self._rollDay(self.state);
+      if (patch) self.setState(patch);
+    };
     // Type de repas + heure déduits de l'horloge réelle à l'ouverture de la validation.
     self._clockDefaults = function () {
       const d = new Date();
@@ -521,7 +606,9 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
       }[t] || 'ph-bowl-food';
     };
     self.setMealType = function (t) { self.setState({ mealType: t }); };
-    self.onMealTime = function (v) { if (v) self.setState({ mealTime: v }); };
+    // On accepte toute valeur (y compris vide pendant la saisie) — sinon le champ
+    // paraît bloqué. La valeur est re-sécurisée à l'enregistrement du repas.
+    self.onMealTime = function (v) { self.setState({ mealTime: v }); };
     self.onNewIng = function (v) { self.setState({ newIng: v }); };
     // Ajout manuel d'un ingrédient saisi par l'utilisateur (tags auto depuis la base).
     self.addIngFromInput = function () {
@@ -547,8 +634,9 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
     // Journées réelles (historique + aujourd'hui) pour l'export et le rapport.
     self._allDays = function (st) {
       const s = st || self.state;
+      const tk = s.todayKey || dayKey();
       const today = {
-        dayLabel: "aujourd'hui", dateLabel: 'jeudi 4 juillet', phase: s.cyclePhase, waterLevel: s.waterLevel || null,
+        key: tk, dayLabel: "aujourd'hui", dateLabel: dateLabelOf(dateFromKey(tk)), phase: s.cyclePhase, waterLevel: s.waterLevel || null,
         meals: (s.meals || []).map(function (m) { return { name: m.name, desc: m.desc, timeLabel: m.timeLabel, compounds: m.compounds || [], foods: m.foods || [] }; }),
         genes: s.lastGene ? [{ timeLabel: s.lastGene.time, intensity: s.lastGene.intensity, compounds: s.lastGene.compounds || [] }] : [],
         ok: s.dayCheck === 'ok',
@@ -674,11 +762,31 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
         if (!saved.windows) saved.windows = INITIAL.windows;
         if (saved.screen !== 'onboarding') saved.screen = 'journal';
         if (typeof Notification !== 'undefined') saved.notifPermission = Notification.permission;
-        self.setState(saved);
-      } else if (typeof Notification !== 'undefined') {
-        self.setState({ notifPermission: Notification.permission });
+        // Changement de jour depuis la dernière utilisation → on archive la journée.
+        const rolled = self._rollDay(saved);
+        self.setState(rolled ? Object.assign(saved, rolled) : saved);
+      } else {
+        const patch = { todayKey: dayKey(), startKey: dayKey() };
+        if (typeof Notification !== 'undefined') patch.notifPermission = Notification.permission;
+        self.setState(patch);
       }
     } catch (e) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // L'app peut rester ouverte plusieurs jours (PWA) : on revérifie la date à
+  // chaque retour au premier plan, et périodiquement.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const check = () => { if (!document.hidden) self.checkDayRollover(); };
+    document.addEventListener('visibilitychange', check);
+    window.addEventListener('focus', check);
+    const t = setInterval(check, 60000);
+    return () => {
+      document.removeEventListener('visibilitychange', check);
+      window.removeEventListener('focus', check);
+      clearInterval(t);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -751,7 +859,10 @@ export default function ObelixApp({ ergo = 'bandeau', pushNotifs = true }) {
 function renderValsFactory(self) {
   return function renderVals() {
     const s = self.state;
-    const NOWH = 14.5;
+    const NOW = new Date();
+    const NOWH = nowHours(NOW); // heure réelle de l'appareil
+    const TODAY_KEY = s.todayKey || dayKey(NOW);
+    const TODAY_D = dateFromKey(TODAY_KEY);
     const ERGO = self.props.ergo || 'bandeau';
     const CORAL = 'var(--coral-500)';
     const GOOD = 'var(--tol-good-500)', WATCH = 'var(--tol-watch-500)', AVOID = 'var(--tol-avoid-500)';
@@ -763,9 +874,9 @@ function renderValsFactory(self) {
 
     // ===== Moteur d'analyse : calcule tout sur l'historique + aujourd'hui =====
     const todayEntry = {
-      dayLabel: "aujourd'hui", dateLabel: 'jeudi 4 juillet', phase: s.cyclePhase, waterLevel: s.waterLevel || null,
+      key: TODAY_KEY, dayLabel: "aujourd'hui", dateLabel: dateLabelOf(TODAY_D), phase: s.cyclePhase, waterLevel: s.waterLevel || null,
       meals: s.meals,
-      genes: s.lastGene ? [{ time: s.lastGene.timeNum != null ? s.lastGene.timeNum : 14.33, timeLabel: s.lastGene.time, intensity: s.lastGene.intensity, compounds: s.lastGene.compounds || [] }] : [],
+      genes: s.lastGene ? [{ time: s.lastGene.timeNum != null ? s.lastGene.timeNum : NOWH, timeLabel: s.lastGene.time, intensity: s.lastGene.intensity, compounds: s.lastGene.compounds || [] }] : [],
       ok: s.dayCheck === 'ok',
     };
     const allDays = (s.history || []).concat([todayEntry]);
@@ -834,13 +945,21 @@ function renderValsFactory(self) {
       name: cap(c), win: '~' + (s.windows[c] || 6) + 'h',
       chipStyle: "background:var(--cream-200);color:var(--cocoa-700);border-radius:var(--radius-pill);padding:5px 11px;font:700 11px " + FONT + ";display:flex;align-items:center;gap:5px",
     })) : [];
-    const DAY_LABELS = { '-1': 'mer. 3', '-2': 'mar. 2' };
+    // Libellés des onglets « jour » : dates réelles des journées archivées.
+    const histAt = (off) => (s.history || [])[(s.history || []).length + off] || null;
+    const dayTabLabel = (off) => {
+      if (off === 0) return "Aujourd'hui";
+      const h = histAt(off);
+      if (h) return h.dayLabel || dayLabelOf(dateFromKey(h.key));
+      const d = new Date(TODAY_D); d.setDate(d.getDate() + off);
+      return dayLabelOf(d);
+    };
     const dayTabs = [-2, -1, 0].map((off) => {
       const sel = s.dayOffset === off;
       const pv = off === 0 ? null : pastDayView(s.history, off);
       const hasGene = off === 0 ? !!s.lastGene : (pv ? !!pv.gene : false);
       return {
-        label: off === 0 ? "Aujourd'hui" : DAY_LABELS[String(off)],
+        label: dayTabLabel(off),
         onSelect: self.setDay(off),
         dotStyle: "width:5px;height:5px;border-radius:50%;margin-top:3px;background:" + (hasGene ? AVOID : GOOD),
         style: sel
@@ -967,8 +1086,8 @@ function renderValsFactory(self) {
     else if (day < ovDay - 1) phaseLabel = 'Folliculaire';
     else if (day <= ovDay + 2) phaseLabel = 'Ovulation';
     else phaseLabel = 'Lutéale';
-    const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
-    const baseD = new Date(2026, 6, 4);
+    const MONTHS = MONTHS_ABBR;
+    const baseD = TODAY_D; // aujourd'hui, réellement
     const fmt = (off) => { const d = new Date(baseD); d.setDate(d.getDate() + off); return d.getDate() + ' ' + MONTHS[d.getMonth()]; };
     const daysUntilNext = CY - day, daysUntilOv = Math.max(0, ovDay - day);
 
@@ -982,8 +1101,14 @@ function renderValsFactory(self) {
         ? "background:" + INFO + ";color:#fff;border-radius:var(--radius-pill);padding:8px 13px;font:700 11.5px " + FONT + ";cursor:pointer"
         : "background:#fff;border:1px solid var(--border-strong);border-radius:var(--radius-pill);padding:8px 13px;font:600 11.5px " + FONT + ";color:" + MUTED + ";cursor:pointer",
     }));
-    const histRaw = [{ m: 'mars', len: 30 }, { m: 'avr.', len: 27 }, { m: 'mai', len: 29 }, { m: 'juin', len: 28 }, { m: 'juil.', len: CY }];
-    const avgLen = Math.round(histRaw.reduce((a, b) => a + b.len, 0) / histRaw.length);
+    // Historique de cycle : mois réels (les 5 derniers jusqu'à aujourd'hui). Tant
+    // qu'aucun cycle passé n'est enregistré, on affiche la durée paramétrée —
+    // aucune variation n'est inventée.
+    const histRaw = [4, 3, 2, 1, 0].map((back) => {
+      const d = new Date(TODAY_D.getFullYear(), TODAY_D.getMonth() - back, 1);
+      return { m: MONTHS_ABBR[d.getMonth()], len: CY };
+    });
+    const avgLen = CY;
     const history = histRaw.map((h, i) => { const cur = i === histRaw.length - 1; return {
       m: h.m, len: h.len, valColor: cur ? 'var(--info-700)' : MUTED,
       barStyle: "width:100%;border-radius:6px 6px 0 0;height:" + Math.round(h.len / 33 * 100) + "%;background:" + (cur ? INFO : '#B9D5EC'),
@@ -995,6 +1120,14 @@ function renderValsFactory(self) {
     const waterLowGenes = A.waterLowGenes || 0;
     const waterLinkStat = waterLowGenes + ' de tes ' + A.totalGenes + ' gênes sont tombées les jours où tu étais peu hydratée';
     const waterLinkStrong = A.totalGenes > 0 && (waterLowGenes / A.totalGenes) >= 0.5;
+
+    // En-tête du Journal + stats profil, calculés sur les vraies dates.
+    const trackedDays = (s.history || []).length + 1;
+    const dayNumber = s.startKey ? Math.max(trackedDays, daysBetween(s.startKey, TODAY_KEY) + 1) : trackedDays;
+    const headerDate = dateLabelOf(TODAY_D).charAt(0).toUpperCase() + dateLabelOf(TODAY_D).slice(1);
+    const headerLine = headerDate + ' · ' + dayNumber + (dayNumber === 1 ? 'ᵉʳ' : 'ᵉ') + ' jour de suivi';
+    const totalMealsAll = (s.history || []).reduce((n, d) => n + ((d.meals || []).length), 0) + (s.meals || []).length;
+    const profileLine = trackedDays + ' jour' + (trackedDays > 1 ? 's' : '') + ' de suivi · ' + totalMealsAll + ' repas';
 
     const db = self._db();
     const fdbCount = db ? db.count : 0, fdbCatCount = db ? db.categories.length : 0;
@@ -1040,8 +1173,16 @@ function renderValsFactory(self) {
       togglePush: self.enablePush(),
       pushTrackStyle: "width:34px;height:20px;border-radius:100px;position:relative;flex-shrink:0;background:" + (s.pushOn ? GOOD : 'var(--sand-400)'),
       pushKnobStyle: "position:absolute;top:2px;width:16px;height:16px;border-radius:50%;background:#fff;" + (s.pushOn ? 'right:2px;' : 'left:2px;'),
+      headerLine, profileLine,
       dayTabs, isToday, isPastDay: !isToday,
-      journalSectionTitle: isToday ? 'Repas du jour' : 'Repas · ' + (s.dayOffset === -1 ? 'mercredi 3 juil.' : 'mardi 2 juil.'),
+      journalSectionTitle: isToday
+        ? 'Repas du jour'
+        : 'Repas · ' + (function () {
+            const h = histAt(s.dayOffset);
+            if (h && h.key) return dateShortOf(dateFromKey(h.key));
+            const d = new Date(TODAY_D); d.setDate(d.getDate() + s.dayOffset);
+            return dateShortOf(d);
+          })(),
       isMealDetail: s.screen === 'mealDetail' && !!dm,
       dmName: dm ? dm.name : '', dmDesc: dm ? dm.desc : '', dmTime: dm ? dm.timeLabel : '', dmIcon: dm ? dm.icon : 'ph-bowl-food',
       dmHasComps: dmWindows.length > 0, dmWindows,
@@ -1133,12 +1274,15 @@ function renderValsFactory(self) {
       obDaysAgoLabel: (s.currentDay - 1) === 0 ? "aujourd'hui" : 'il y a ' + (s.currentDay - 1) + (s.currentDay - 1 > 1 ? ' jours' : ' jour'),
       obDaysAgoValue: (s.currentDay - 1) === 0 ? "0 j" : '-' + (s.currentDay - 1) + ' j',
       obPeriodDurLabel: s.periodDuration + ' jours', obCycleLenLabel: s.cycleLength + ' jours',
+      cycleLengthLabel: s.cycleLength + ' jours',
       obLessDay: self.obDaysAgo(-1), obMoreDay: self.obDaysAgo(1), obLessDur: self.obPeriodDur(-1), obMoreDur: self.obPeriodDur(1),
       obPhasePreview: 'Aujourd\'hui : J' + s.currentDay + ' · ' + phaseLabel + ' · prochaines règles ~' + fmt(daysUntilNext),
       elimWarning, elimWarnIng: glutenIng ? glutenIng.name : '',
       prevHasRisk, prevNoRisk: !prevHasRisk, prevHasMain,
       prevMainLabel, prevMainWindow, prevMainAvec,
       prevDigestHours: '~' + prev.digestHours + 'h',
+      // Départ de la frise = heure du dernier repas enregistré (sinon maintenant).
+      prevStartLabel: (s.meals && s.meals.length ? s.meals[s.meals.length - 1].timeLabel : hLabel(NOWH)),
       prevDigestPct: Math.min(100, Math.round(prev.digestHours / 24 * 100)),
       prevDigestNote: prev.digestNote,
       prevRiskLabel: prevComps.map(cap).join(' & '), prevChipLabel: (lastMeal.name || 'Repas') + ' enregistré',
@@ -1309,7 +1453,7 @@ function AppView({ V }) {
             <img src="/logo-mark.png" alt="Obélix" style={css('position:absolute;top:16px;right:18px;height:34px;width:auto;opacity:.9')} />
             <div onClick={V.goNotifs} style={css('position:absolute;top:16px;right:62px;width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--coral-700);box-shadow:var(--shadow-xs)')}><i className="ph ph-bell" style={{ fontSize: 17 }}></i>{V.hasUnread && (<span style={css('position:absolute;top:-3px;right:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--coral-500);color:#fff;font:800 9.5px var(--font-body);display:flex;align-items:center;justify-content:center;border:2px solid var(--cream-100)')}>{V.notifUnread}</span>)}</div>
             {V.navShowNow && (<div onClick={V.goProfil} style={css('position:absolute;top:16px;right:104px;width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--coral-700);box-shadow:var(--shadow-xs)')}><i className="ph ph-user" style={{ fontSize: 17 }}></i></div>)}
-            <div style={css('font:var(--fw-semibold) 12px/1.2 var(--font-mono);color:var(--coral-700);max-width:calc(100% - 152px)')}>Jeudi 4 juillet · 9ᵉ jour de suivi</div>
+            <div style={css('font:var(--fw-semibold) 12px/1.2 var(--font-mono);color:var(--coral-700);max-width:calc(100% - 152px)')}>{V.headerLine}</div>
             <div style={css('font:var(--fw-bold) 26px/1.1 var(--font-display);color:var(--ink);margin-top:6px;max-width:calc(100% - 152px)')}>Bonjour Manon</div>
             <div onClick={V.goNow} style={css('margin-top:14px;display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.6);border-radius:var(--radius-sm);padding:10px 12px;cursor:pointer')}>
               <span style={css(V.activeDotStyle)}></span>
@@ -1616,7 +1760,7 @@ function AppView({ V }) {
                 {V.prevHasRisk && (<>
                   <div style={css('margin-top:14px;font:var(--fw-semibold) 12px var(--font-body);color:var(--cocoa-700);margin-bottom:6px')}>Fenêtre à risque · {V.prevRiskLabel}</div>
                   <div style={css('position:relative;height:10px;border-radius:5px;background:var(--cream-200);overflow:hidden')}><div style={css('position:absolute;left:8%;top:0;height:100%;right:0;background:repeating-linear-gradient(45deg,var(--tol-avoid-500),var(--tol-avoid-500) 5px,var(--tol-avoid-100) 5px,var(--tol-avoid-100) 10px)')}></div></div>
-                  <div style={css('display:flex;justify-content:space-between;margin-top:7px;font:400 10px var(--font-mono);color:var(--sand-500)')}><span>13h</span><span>+6h</span><span>+12h</span><span>+24h</span></div>
+                  <div style={css('display:flex;justify-content:space-between;margin-top:7px;font:400 10px var(--font-mono);color:var(--sand-500)')}><span>{V.prevStartLabel}</span><span>+6h</span><span>+12h</span><span>+24h</span></div>
                 </>)}
                 {V.prevNoRisk && (
                   <div style={css('margin-top:12px;font:var(--fw-regular) 11.5px/1.4 var(--font-body);color:var(--tol-good-700)')}>Aucun composé suspect coché dans ce repas — pas de fenêtre à surveiller.</div>
@@ -1873,7 +2017,7 @@ function AppView({ V }) {
           <div style={css('flex:1;overflow-y:auto;padding:16px 18px 24px')} className="ob-scroll">
             <div style={css('display:flex;align-items:center;gap:13px')}>
               <div style={css('width:56px;height:56px;border-radius:50%;background:var(--coral-100);color:var(--coral-700);display:flex;align-items:center;justify-content:center;font:var(--fw-extra) 20px var(--font-display);flex-shrink:0')}>M</div>
-              <div><div style={css('font:var(--fw-bold) 17px var(--font-display);color:var(--ink)')}>Manon</div><div style={css('font:500 11px var(--font-mono);color:var(--taupe-600);margin-top:2px')}>9 jours de suivi · 25 repas · 5 cycles</div></div>
+              <div><div style={css('font:var(--fw-bold) 17px var(--font-display);color:var(--ink)')}>Manon</div><div style={css('font:500 11px var(--font-mono);color:var(--taupe-600);margin-top:2px')}>{V.profileLine}</div></div>
             </div>
 
             <div style={css('font:var(--fw-bold) 12px var(--font-body);color:var(--cocoa-700);margin:20px 2px 8px')}>Notifications</div>
@@ -1931,7 +2075,7 @@ function AppView({ V }) {
             {V.exportDone && (
               <div style={css('display:flex;align-items:center;gap:11px;background:var(--tol-good-50);border-radius:var(--radius-lg);padding:15px 16px')}>
                 <div style={css('width:24px;height:24px;border-radius:50%;background:var(--tol-good-500);color:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0')}><i className="ph-bold ph-check" style={{ fontSize: 13 }}></i></div>
-                <div style={css('font:var(--fw-bold) 12.5px var(--font-body);color:var(--tol-good-700)')}>Rapport généré — obelix-manon-juil.pdf</div>
+                <div style={css('font:var(--fw-bold) 12.5px var(--font-body);color:var(--tol-good-700)')}>Rapport généré — obelix-manon-rapport.pdf</div>
               </div>
             )}
 
@@ -2204,7 +2348,7 @@ function AppView({ V }) {
                   </div>
                 ))}
               </div>
-              <div style={css('display:flex;align-items:center;gap:8px;margin-top:12px;background:var(--info-50);border-radius:var(--radius-sm);padding:9px 11px')}><i className="ph-fill ph-trend-up" style={{ fontSize: 15, color: 'var(--info-500)', flexShrink: 0 }}></i><div style={css('font:var(--fw-regular) 10.5px/1.4 var(--font-body);color:var(--info-700)')}>5 cycles enregistrés · précision des prévisions <strong>±2 jours</strong>. Plus tu logues, plus c'est précis.</div></div>
+              <div style={css('display:flex;align-items:center;gap:8px;margin-top:12px;background:var(--info-50);border-radius:var(--radius-sm);padding:9px 11px')}><i className="ph-fill ph-trend-up" style={{ fontSize: 15, color: 'var(--info-500)', flexShrink: 0 }}></i><div style={css('font:var(--fw-regular) 10.5px/1.4 var(--font-body);color:var(--info-700)')}>Cycle de <strong>{V.cycleLengthLabel}</strong> — prévisions basées sur ce réglage. Plus tu logues, plus c&apos;est précis.</div></div>
             </div>
 
             <div style={css('background:linear-gradient(150deg,var(--coral-50),var(--tol-watch-50));border-radius:var(--radius-lg);padding:14px 16px;margin-top:2px')}>
